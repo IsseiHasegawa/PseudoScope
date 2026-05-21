@@ -1,9 +1,0 @@
-file name,Function name,Test name,error message
-hello.cpp,hello,hello() output,"FAIL: hello() output expected ""Hello world
-"", got """""
-hello.cpp,TwoSum,"TwoSum(3, 4)","FAIL: TwoSum(3, 4) expected 7, got 0"
-hello.cpp,TwoSum,"TwoSum(3, 4)","FAIL: TwoSum(3, 4) expected 7, got 1"
-hello.cpp,FTwoSum,"FTwoSum(1.5, 2.5)","FAIL: FTwoSum(1.5, 2.5) expected 4, got 0"
-hello.cpp,FTwoSum,"FTwoSum(1.5, 2.5)","FAIL: FTwoSum(1.5, 2.5) expected 4, got 1"
-hello.cpp,ReturnString,"ReturnString(""test"")","FAIL: ReturnString(""test"") expected ""test"", got """""
-hello.cpp,ReturnString,"ReturnString(""test"")","FAIL: ReturnString(""test"") expected ""test"", got ""A"""
