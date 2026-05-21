@@ -74,14 +74,14 @@ python3 pseudoscope.py report \
 Output columns:
 
 ```
-program name | Function name | Test name | error message
+file name | Function name | Test name | error message
 ```
 
 Example (`Test/.pseudoscope/results.table.txt`):
 
 ```
-Test | hello | hello() output | FAIL: hello() output expected "Hello world\n", got ""
-Test | TwoSum | TwoSum(3, 4) | FAIL: TwoSum(3, 4) expected 7, got 0
+hello.cpp | hello | hello() output | FAIL: hello() output expected "Hello world\n", got ""
+hello.cpp | TwoSum | TwoSum(3, 4) | FAIL: TwoSum(3, 4) expected 7, got 0
 ```
 
 Use `--include-passed` to add rows for mutants where tests still passed (`pseudo_tested`).

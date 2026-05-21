@@ -442,7 +442,7 @@ def sweep_functions(
 
 
 # ---------------------------------------------------------------------------
-# Table report — program name | function | test name | error message
+# Table report — file name | function | test name | error message
 # ---------------------------------------------------------------------------
 
 FAIL_BLOCK_RE = re.compile(r"FAIL:\s*(.+?)\s+expected\b", re.DOTALL)
@@ -493,7 +493,7 @@ def parse_build_failure(stderr: str) -> tuple[str, str] | None:
 
 @dataclass
 class TableRow:
-    program_name: str
+    file_name: str
     function_name: str
     test_name: str
     error_message: str
@@ -502,11 +502,11 @@ class TableRow:
 
 def results_to_table_rows(
     results: list[dict],
-    program_name: str,
     include_passed: bool = False,
 ) -> list[TableRow]:
     rows: list[TableRow] = []
     for entry in results:
+        file_name = entry["file"]
         func_name = entry["function"]
         for mutant in entry.get("mutants", []):
             replacement = mutant.get("replacement", "")
@@ -515,7 +515,7 @@ def results_to_table_rows(
                 if parsed:
                     test_name, err = parsed
                     rows.append(
-                        TableRow(program_name, func_name, test_name, err, replacement)
+                        TableRow(file_name, func_name, test_name, err, replacement)
                     )
                 continue
 
@@ -524,14 +524,12 @@ def results_to_table_rows(
                 if failures:
                     for test_name, err in failures:
                         rows.append(
-                            TableRow(
-                                program_name, func_name, test_name, err, replacement
-                            )
+                            TableRow(file_name, func_name, test_name, err, replacement)
                         )
                 else:
                     rows.append(
                         TableRow(
-                            program_name,
+                            file_name,
                             func_name,
                             "(test failed)",
                             mutant.get("test_stderr", "").strip() or "(no message)",
@@ -541,7 +539,7 @@ def results_to_table_rows(
             elif include_passed and mutant.get("test_result") == "pass":
                 rows.append(
                     TableRow(
-                        program_name,
+                        file_name,
                         func_name,
                         "(passed)",
                         mutant.get("test_stdout", "").strip() or "(tests passed)",
@@ -558,13 +556,13 @@ def _escape_cell(value: str) -> str:
 
 def format_table(rows: list[TableRow], delimiter: str = " | ") -> str:
     """Pipe-style table for terminal viewing."""
-    header = ["program name", "Function name", "Test name", "error message"]
+    header = ["file name", "Function name", "Test name", "error message"]
     lines = [delimiter.join(header)]
     for r in rows:
         lines.append(
             delimiter.join(
                 [
-                    _escape_cell(r.program_name),
+                    _escape_cell(r.file_name),
                     _escape_cell(r.function_name),
                     _escape_cell(r.test_name),
                     _escape_cell(r.error_message),
@@ -578,29 +576,18 @@ def format_csv(rows: list[TableRow]) -> str:
     """RFC-style CSV (quoted fields) for Excel / Google Sheets."""
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(["program name", "Function name", "Test name", "error message"])
+    writer.writerow(["file name", "Function name", "Test name", "error message"])
     for r in rows:
         writer.writerow(
-            [r.program_name, r.function_name, r.test_name, r.error_message]
+            [r.file_name, r.function_name, r.test_name, r.error_message]
         )
     return buf.getvalue()
 
 
-def infer_program_name(results_path: Path) -> str:
-    """Use parent-of-.pseudoscope directory name, e.g. Test/.pseudoscope/... -> Test."""
-    parts = results_path.resolve().parts
-    if ".pseudoscope" in parts:
-        idx = parts.index(".pseudoscope")
-        if idx > 0:
-            return parts[idx - 1]
-    return results_path.parent.name
-
-
 def cmd_report(args: argparse.Namespace) -> None:
     results_path = Path(args.results).resolve()
-    program_name = args.program or infer_program_name(results_path)
     raw = json.loads(results_path.read_text(encoding="utf-8"))
-    rows = results_to_table_rows(raw, program_name, include_passed=args.include_passed)
+    rows = results_to_table_rows(raw, include_passed=args.include_passed)
     if args.format == "csv":
         text = format_csv(rows)
     else:
@@ -690,8 +677,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_rep = sub.add_parser("report", help="Format results.json as a table")
     p_rep.add_argument("--results", required=True, help="results.json from sweep")
-    p_rep.add_argument("--program", default=None,
-                       help="Program name column (default: inferred from path)")
     p_rep.add_argument("--out", default=None, help="Write table to file (default: stdout)")
     p_rep.add_argument("--format", choices=["pipe", "csv"], default="pipe",
                        help="Output format: pipe (terminal) or csv (Excel)")
