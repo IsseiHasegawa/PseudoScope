@@ -1,0 +1,136 @@
+[
+  {
+    "file": "hello.cpp",
+    "function": "hello",
+    "line": 5,
+    "return_type": "void",
+    "mutants": [
+      {
+        "replacement": "return;",
+        "build_result": "pass",
+        "test_result": "fail",
+        "classification": "killed",
+        "build_exit_code": 0,
+        "test_exit_code": 1,
+        "build_duration_sec": 0.5,
+        "test_duration_sec": 0.129,
+        "build_stdout": "c++ -std=c++17 -Wall -Wextra -I src -o test_hello tests/test_hello.cpp src/hello.cpp\n",
+        "build_stderr": "",
+        "test_stdout": "",
+        "test_stderr": "FAIL: hello() output expected \"Hello world\n\", got \"\"\n"
+      }
+    ],
+    "final_classification": "killed"
+  },
+  {
+    "file": "hello.cpp",
+    "function": "TwoSum",
+    "line": 9,
+    "return_type": "int",
+    "mutants": [
+      {
+        "replacement": "return 0;",
+        "build_result": "pass",
+        "test_result": "fail",
+        "classification": "killed",
+        "build_exit_code": 0,
+        "test_exit_code": 1,
+        "build_duration_sec": 0.516,
+        "test_duration_sec": 0.158,
+        "build_stdout": "c++ -std=c++17 -Wall -Wextra -I src -o test_hello tests/test_hello.cpp src/hello.cpp\n",
+        "build_stderr": "src/hello.cpp:9:16: warning: unused parameter 'a' [-Wunused-parameter]\n    9 | int TwoSum(int a, int b) {\n      |                ^\nsrc/hello.cpp:9:23: warning: unused parameter 'b' [-Wunused-parameter]\n    9 | int TwoSum(int a, int b) {\n      |                       ^\n2 warnings generated.\n",
+        "test_stdout": "",
+        "test_stderr": "FAIL: TwoSum(3, 4) expected 7, got 0\n"
+      },
+      {
+        "replacement": "return 1;",
+        "build_result": "pass",
+        "test_result": "fail",
+        "classification": "killed",
+        "build_exit_code": 0,
+        "test_exit_code": 1,
+        "build_duration_sec": 0.547,
+        "test_duration_sec": 0.192,
+        "build_stdout": "c++ -std=c++17 -Wall -Wextra -I src -o test_hello tests/test_hello.cpp src/hello.cpp\n",
+        "build_stderr": "src/hello.cpp:9:16: warning: unused parameter 'a' [-Wunused-parameter]\n    9 | int TwoSum(int a, int b) {\n      |                ^\nsrc/hello.cpp:9:23: warning: unused parameter 'b' [-Wunused-parameter]\n    9 | int TwoSum(int a, int b) {\n      |                       ^\n2 warnings generated.\n",
+        "test_stdout": "",
+        "test_stderr": "FAIL: TwoSum(3, 4) expected 7, got 1\n"
+      }
+    ],
+    "final_classification": "killed"
+  },
+  {
+    "file": "hello.cpp",
+    "function": "FTwoSum",
+    "line": 13,
+    "return_type": "double",
+    "mutants": [
+      {
+        "replacement": "return 0.0;",
+        "build_result": "pass",
+        "test_result": "fail",
+        "classification": "killed",
+        "build_exit_code": 0,
+        "test_exit_code": 1,
+        "build_duration_sec": 0.512,
+        "test_duration_sec": 0.158,
+        "build_stdout": "c++ -std=c++17 -Wall -Wextra -I src -o test_hello tests/test_hello.cpp src/hello.cpp\n",
+        "build_stderr": "src/hello.cpp:13:23: warning: unused parameter 'a' [-Wunused-parameter]\n   13 | double FTwoSum(double a, double b) {\n      |                       ^\nsrc/hello.cpp:13:33: warning: unused parameter 'b' [-Wunused-parameter]\n   13 | double FTwoSum(double a, double b) {\n      |                                 ^\n2 warnings generated.\n",
+        "test_stdout": "",
+        "test_stderr": "FAIL: FTwoSum(1.5, 2.5) expected 4, got 0\n"
+      },
+      {
+        "replacement": "return 1.0;",
+        "build_result": "pass",
+        "test_result": "fail",
+        "classification": "killed",
+        "build_exit_code": 0,
+        "test_exit_code": 1,
+        "build_duration_sec": 0.517,
+        "test_duration_sec": 0.157,
+        "build_stdout": "c++ -std=c++17 -Wall -Wextra -I src -o test_hello tests/test_hello.cpp src/hello.cpp\n",
+        "build_stderr": "src/hello.cpp:13:23: warning: unused parameter 'a' [-Wunused-parameter]\n   13 | double FTwoSum(double a, double b) {\n      |                       ^\nsrc/hello.cpp:13:33: warning: unused parameter 'b' [-Wunused-parameter]\n   13 | double FTwoSum(double a, double b) {\n      |                                 ^\n2 warnings generated.\n",
+        "test_stdout": "",
+        "test_stderr": "FAIL: FTwoSum(1.5, 2.5) expected 4, got 1\n"
+      }
+    ],
+    "final_classification": "killed"
+  },
+  {
+    "file": "hello.cpp",
+    "function": "ReturnString",
+    "line": 17,
+    "return_type": "std::string",
+    "mutants": [
+      {
+        "replacement": "return \"\";",
+        "build_result": "pass",
+        "test_result": "fail",
+        "classification": "killed",
+        "build_exit_code": 0,
+        "test_exit_code": 1,
+        "build_duration_sec": 0.52,
+        "test_duration_sec": 0.162,
+        "build_stdout": "c++ -std=c++17 -Wall -Wextra -I src -o test_hello tests/test_hello.cpp src/hello.cpp\n",
+        "build_stderr": "src/hello.cpp:17:38: warning: unused parameter 's' [-Wunused-parameter]\n   17 | std::string ReturnString(std::string s) {\n      |                                      ^\n1 warning generated.\n",
+        "test_stdout": "",
+        "test_stderr": "FAIL: ReturnString(\"test\") expected \"test\", got \"\"\n"
+      },
+      {
+        "replacement": "return \"A\";",
+        "build_result": "pass",
+        "test_result": "fail",
+        "classification": "killed",
+        "build_exit_code": 0,
+        "test_exit_code": 1,
+        "build_duration_sec": 0.52,
+        "test_duration_sec": 0.166,
+        "build_stdout": "c++ -std=c++17 -Wall -Wextra -I src -o test_hello tests/test_hello.cpp src/hello.cpp\n",
+        "build_stderr": "src/hello.cpp:17:38: warning: unused parameter 's' [-Wunused-parameter]\n   17 | std::string ReturnString(std::string s) {\n      |                                      ^\n1 warning generated.\n",
+        "test_stdout": "",
+        "test_stderr": "FAIL: ReturnString(\"test\") expected \"test\", got \"A\"\n"
+      }
+    ],
+    "final_classification": "killed"
+  }
+]

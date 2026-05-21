@@ -1,0 +1,7 @@
+numpy/
+Test/hello
+Test/test_hello
+Test/src/a.out
+Test/src/hello
+examples/simple_cpp/test_math
+.pseudoscope/backups/

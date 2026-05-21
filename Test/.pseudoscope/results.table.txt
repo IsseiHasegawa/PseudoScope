@@ -1,0 +1,8 @@
+program name | Function name | Test name | error message
+Test | hello | hello() output | FAIL: hello() output expected "Hello world\n", got ""
+Test | TwoSum | TwoSum(3, 4) | FAIL: TwoSum(3, 4) expected 7, got 0
+Test | TwoSum | TwoSum(3, 4) | FAIL: TwoSum(3, 4) expected 7, got 1
+Test | FTwoSum | FTwoSum(1.5, 2.5) | FAIL: FTwoSum(1.5, 2.5) expected 4, got 0
+Test | FTwoSum | FTwoSum(1.5, 2.5) | FAIL: FTwoSum(1.5, 2.5) expected 4, got 1
+Test | ReturnString | ReturnString("test") | FAIL: ReturnString("test") expected "test", got ""
+Test | ReturnString | ReturnString("test") | FAIL: ReturnString("test") expected "test", got "A"
