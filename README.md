@@ -52,6 +52,15 @@ If `find` reports `No such file or directory` for `src`, `cd` into `ultrajson/` 
 
 ## UltraJSON — build and test
 
+`ujson` is a C extension (`ujson.cpython-*.so`). **After every change to C/C++ source under `src/`, rebuild before running tests.** `pytest` alone does not recompile; it keeps using the last built `.so`.
+
+| Changed files | Rebuild needed? |
+|---------------|-----------------|
+| `src/ujson/**/*.c`, `*.cc` | Yes — run `pip install -e ".[dev]"` again |
+| `tests/*.py` only | No — `pytest` is enough |
+
+First-time setup:
+
 ```bash
 cd ultrajson
 python3 -m venv .venv
@@ -59,6 +68,23 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 pytest
 ```
+
+Day-to-day loop after editing C (PseudoScope mutations, restores, etc.):
+
+```bash
+cd ultrajson
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
+
+Quick sanity check that the new binary is loaded:
+
+```bash
+python3 -c "import ujson; print(ujson.dumps(3.14159))"
+```
+
+If this still prints `0.0` after you restored source, the extension was not rebuilt (or the build failed — check `pip install` output).
 
 A passing baseline is recorded in `ultrajson/baseline_test_result.txt` (379 tests).
 
