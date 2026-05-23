@@ -89,3 +89,67 @@ If this still prints `0.0` after you restored source, the extension was not rebu
 A passing baseline is recorded in `ultrajson/baseline_test_result.txt` (379 tests).
 
 Function metadata for sweeps lives under `ultrajson/.pseudoscope/` (`functions.json`, `functions_lib.json`).
+
+## PseudoScope CLI (`pseudoscope.py`)
+
+Mutation sweep: for each function under `src/`, replace the body with default return value(s), rebuild, run `pytest`, record **pass** / **fail**, and restore the source from backup (git is not modified).
+
+### Discover functions (requires `ctags`)
+
+```bash
+cd PesudoScope
+
+python3 pseudoscope.py discover \
+  --source-root ultrajson/src \
+  --out ultrajson/.pseudoscope/functions_discovered.json
+```
+
+Skips directories named `test`, `tests`, `deps`, `cctest`, etc.
+
+### Run sweep
+
+```bash
+cd PesudoScope
+
+python3 pseudoscope.py sweep \
+  --workdir ultrajson \
+  --source-root ultrajson/src \
+  --build-command 'pip install -e ".[dev]"' \
+  --test-command pytest \
+  --out ultrajson/.pseudoscope/sweep_results.csv
+```
+
+Each mutant is one CSV row: `file,function,mutant_id,result`.
+
+After the sweep, the tool prints an **aligned table** and a **summary** to the terminal, and writes `*_table.txt` next to the CSV (same folder, same basename).
+
+**PI** = percentage of **functions** that passed. Each function gets up to two default-return mutants; **if either run fails, the function is fail**. Pass only when every mutant for that function passed.
+
+```
+File | Function | Mutant | Result
+---------------------------------
+python/ujson.c | object_is_decimal_type | zero | FAIL
+...
+
+=== Summary ===
+Functions:  85 total  |  2 pass  |  83 fail
+PI: 2.4%  — pass only if all default-return mutants passed; any fail counts as fail
+```
+
+Progress (`[3/85] ...`) goes to stderr; the table prints once at the end. Use `--live-rows` to echo each row as it completes.
+
+Use `--max-functions 5` to try a small run first. Backups are stored under `ultrajson/.pseudoscope/backups/`.
+
+### Default-return mutants (two per type, except `void`)
+
+| Category | mutant_id | Body |
+|----------|-----------|------|
+| `void` | `return` | `return;` |
+| `bool` | `false` / `true` | `return false;` / `return true;` |
+| `int` | `zero` / `one` | `return 0;` / `return 1;` |
+| `float` | `zero` / `one` | `return 0.0;` / `return 1.0;` |
+| `pyobject` | `null` / `none` | `return NULL;` / `Py_INCREF(Py_None); return Py_None;` |
+| `char_ptr` | `null` / `empty` | `return NULL;` / `return "";` |
+| `void_ptr` | `null` / `sentinel` | `return NULL;` / `return (void*)1;` |
+
+Build failures are recorded as **fail** (same as test failures).
