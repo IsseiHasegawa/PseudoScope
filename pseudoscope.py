@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import sys
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterator, Sequence
 
@@ -85,9 +85,6 @@ class SweepConfig:
     test_command: str
     out_csv: Path
     timeout_seconds: int = 600
-    exclude_dir_parts: frozenset[str] = field(
-        default_factory=lambda: DEFAULT_EXCLUDE_DIR_PARTS
-    )
 
 
 @dataclass
@@ -503,7 +500,7 @@ def find_function_body_span(source: str, func_line_1based: int) -> tuple[int, in
     Locate the function body as 0-based line indices *inside* the braces.
 
     Scans from the definition line: finds the parameter list `(...)`, then the
-  opening `{`, then matching `}` with naive string/comment handling.
+    opening `{`, then matching `}` with naive string/comment handling.
     """
     if func_line_1based < 1:
         return None
@@ -625,8 +622,6 @@ def discover_functions_in_file(
         if parsed is None:
             continue
         name, line_no, sig = parsed
-        if name in BOGUS_CTAGS_NAMES:
-            continue
         raw_ret = resolve_return_type(sig, name, lines, line_no)
         if raw_ret is None:
             continue
@@ -1036,7 +1031,6 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         test_command=args.test_command,
         out_csv=out_csv,
         timeout_seconds=timeout,
-        exclude_dir_parts=exclude,
     )
 
     records = discover_all(source_root, exclude)
@@ -1073,8 +1067,6 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             if func.file not in backups_initialized:
                 ensure_backup(workdir, abs_file, func.file)
                 backups_initialized.add(func.file)
-            else:
-                restore_from_backup(workdir, abs_file, func.file)
 
             print(
                 f"[{index}/{len(records)}] {func.file} :: {func.name} "
