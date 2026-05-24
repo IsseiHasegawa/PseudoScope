@@ -9,6 +9,8 @@ The idea: replace a function body with a default return (e.g. `return 0;`), rebu
 ```
 PesudoScope/
 ├── README.md
+├── pseudoscope.py
+├── examples/pseudoscope_demo/   # small C demo (expected PI ≈ 50%)
 └── ultrajson/          # target project (nested git repo)
     ├── src/
     ├── tests/
@@ -90,6 +92,10 @@ A passing baseline is recorded in `ultrajson/baseline_test_result.txt` (379 test
 
 Function metadata for sweeps lives under `ultrajson/.pseudoscope/` (`functions.json`, `functions_lib.json`).
 
+## Demo project (`examples/pseudoscope_demo/`)
+
+A tiny C library with **tested** functions (`add`, `multiply`) and **untested** functions (`dead_code_transform`, `unused_scale`). A full sweep should report **PI ≈ 50%**. See [examples/pseudoscope_demo/README.md](examples/pseudoscope_demo/README.md).
+
 ## PseudoScope CLI (`pseudoscope.py`)
 
 Mutation sweep: for each function under `src/`, replace the body with default return value(s), rebuild, run `pytest`, record **pass** / **fail**, and restore the source from backup (git is not modified).
@@ -100,8 +106,11 @@ Mutation sweep: for each function under `src/`, replace the body with default re
 cd PesudoScope
 
 python3 pseudoscope.py discover \
-  --source-root ultrajson/src \
+  --workdir ultrajson \
   --out ultrajson/.pseudoscope/functions_discovered.json
+```
+
+`--source-root` is optional: if omitted, paths like `src/` or `libCacheSim/libCacheSim/` are inferred from `--workdir`.
 ```
 
 Skips directories named `test`, `tests`, `deps`, `cctest`, etc.
@@ -113,7 +122,6 @@ cd PesudoScope
 
 python3 pseudoscope.py sweep \
   --workdir ultrajson \
-  --source-root ultrajson/src \
   --build-command 'pip install -e ".[dev]"' \
   --test-command pytest \
   --out ultrajson/.pseudoscope/sweep_results.csv

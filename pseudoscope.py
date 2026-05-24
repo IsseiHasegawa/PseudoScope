@@ -36,6 +36,13 @@ DEFAULT_EXCLUDE_DIR_PARTS = frozenset(
         "deps",
         "cctest",
         "__pycache__",
+        "_build",
+        "build",
+        "scripts",
+        "doc",
+        "data",
+        ".git",
+        ".pseudoscope",
     }
 )
 
@@ -198,6 +205,64 @@ def iter_source_files(source_root: Path, exclude_parts: frozenset[str]) -> Itera
         yield path
 
 
+def count_source_files(source_root: Path, exclude_parts: frozenset[str]) -> int:
+    """Count C/C++ files under source_root (used to pick an inferred scan root)."""
+    return sum(1 for _ in iter_source_files(source_root, exclude_parts))
+
+
+def infer_source_root(
+    workdir: Path,
+    explicit: Path | None,
+    exclude_parts: frozenset[str],
+) -> Path:
+    """
+    Choose where to scan for C/C++ when ``--source-root`` is omitted.
+
+    Checks common layouts (``src/``, nested ``<project>/<project>/``), then the
+    immediate subdirectory with the most ``.c`` / ``.cc`` files, then ``workdir``.
+    """
+    if explicit is not None:
+        return explicit.resolve()
+
+    workdir = workdir.resolve()
+    candidates: list[Path] = []
+
+    src = workdir / "src"
+    if src.is_dir():
+        candidates.append(src)
+
+    # e.g. libCacheSim/libCacheSim/
+    nested = workdir / workdir.name
+    if nested.is_dir():
+        candidates.append(nested)
+
+    best_child: Path | None = None
+    best_child_count = 0
+    for child in sorted(workdir.iterdir()):
+        if not child.is_dir():
+            continue
+        if path_should_exclude(child.relative_to(workdir), exclude_parts):
+            continue
+        n = count_source_files(child, exclude_parts)
+        if n > best_child_count:
+            best_child_count = n
+            best_child = child
+    if best_child is not None:
+        candidates.append(best_child)
+
+    candidates.append(workdir)
+
+    chosen = workdir
+    chosen_count = -1
+    for candidate in candidates:
+        n = count_source_files(candidate, exclude_parts)
+        if n > chosen_count:
+            chosen_count = n
+            chosen = candidate
+
+    return chosen
+
+
 def run_ctags(file_path: Path) -> list[str]:
     """Run ctags -x on one file; return stdout lines (empty if ctags missing)."""
     cmd = [
@@ -260,6 +325,96 @@ def extract_return_type(signature: str, func_name: str) -> str | None:
     if idx < 0:
         return None
     return signature[:idx].strip()
+
+
+def _gather_declaration_lines(
+    lines: list[str],
+    func_line_index: int,
+    *,
+    max_lookback: int = 12,
+) -> list[str]:
+    """
+    Collect source lines that form the function declaration ending at ``func_line_index``.
+
+    Stops at a prior complete statement (``;`` or ``}``) so the previous function's
+    closing brace is not mistaken for part of the return type.
+    """
+    if func_line_index < 0 or func_line_index >= len(lines):
+        return []
+
+    decl: list[str] = [lines[func_line_index]]
+    lower_bound = max(0, func_line_index - max_lookback)
+    i = func_line_index - 1
+    while i >= lower_bound:
+        stripped = lines[i].strip()
+        if stripped.startswith("#"):
+            decl.insert(0, lines[i])
+            i -= 1
+            continue
+        if not stripped:
+            i -= 1
+            continue
+        if stripped.endswith(";") or stripped == "}" or stripped.endswith("}"):
+            break
+        decl.insert(0, lines[i])
+        i -= 1
+    return decl
+
+
+def extract_return_type_from_source(
+    lines: list[str],
+    line_no_1based: int,
+    func_name: str,
+    *,
+    max_lookback: int = 12,
+) -> str | None:
+    """
+    Read return type from source when ctags only reports ``name(args)``.
+
+    Handles multi-line declarations such as::
+
+        static int
+        foo(int x)
+    """
+    idx = line_no_1based - 1
+    if idx < 0 or idx >= len(lines):
+        return None
+    if func_name not in lines[idx]:
+        return None
+
+    decl_lines = _gather_declaration_lines(
+        lines, idx, max_lookback=max_lookback
+    )
+    blob = " ".join(part.strip() for part in decl_lines)
+    pos = blob.find(func_name)
+    if pos < 0:
+        return None
+    after = blob[pos + len(func_name) :].lstrip()
+    if not after.startswith("("):
+        return None
+
+    ret = blob[:pos].strip()
+    if not ret:
+        return None
+    # Reject obvious garbage (e.g. absorbed text from a bad lookback window).
+    if "{" in ret or "}" in ret:
+        return None
+    return ret
+
+
+def resolve_return_type(
+    signature: str,
+    func_name: str,
+    source_lines: list[str],
+    line_no_1based: int,
+) -> str | None:
+    """Prefer ctags signature; fall back to the definition in source."""
+    raw = extract_return_type(signature, func_name)
+    if raw:
+        return raw
+    return extract_return_type_from_source(
+        source_lines, line_no_1based, func_name
+    )
 
 
 def normalize_return_type(raw: str) -> str:
@@ -400,14 +555,15 @@ def find_function_body_span(source: str, func_line_1based: int) -> tuple[int, in
                 i += 1
             continue
         if ch == "{":
+            open_brace_pos = i
             i += 1
             break
         i += 1
     else:
         return None
 
-    body_start_char = i
     depth = 1
+    close_brace_pos: int | None = None
     while i < n and depth > 0:
         ch = source[i]
         if ch in ("'", '"'):
@@ -428,19 +584,30 @@ def find_function_body_span(source: str, func_line_1based: int) -> tuple[int, in
             depth += 1
         elif ch == "}":
             depth -= 1
+            if depth == 0:
+                close_brace_pos = i
         i += 1
 
-    if depth != 0:
+    if depth != 0 or close_brace_pos is None:
         return None
-
-    body_end_char = i - 1  # character before closing `}`
 
     def char_to_line(pos: int) -> int:
         return source.count("\n", 0, pos)
 
-    start_line = char_to_line(body_start_char)
-    end_line = char_to_line(body_end_char)
-    return start_line, end_line
+    open_line = char_to_line(open_brace_pos)
+    close_line = char_to_line(close_brace_pos)
+
+    # Usual layout: opening brace on its own line, body lines, then `}`.
+    if open_line < close_line:
+        body_start = open_line + 1
+        body_end = close_line - 1
+        if body_start <= body_end:
+            return body_start, body_end
+        # Empty body `{` newline `}` — insert mutants between brace lines.
+        return open_line + 1, open_line
+
+    # Single-line body, e.g. `int f() { return 0; }`
+    return open_line, open_line
 
 
 def discover_functions_in_file(
@@ -460,7 +627,7 @@ def discover_functions_in_file(
         name, line_no, sig = parsed
         if name in BOGUS_CTAGS_NAMES:
             continue
-        raw_ret = extract_return_type(sig, name)
+        raw_ret = resolve_return_type(sig, name, lines, line_no)
         if raw_ret is None:
             continue
         if should_skip_function(name, raw_ret):
@@ -520,7 +687,8 @@ def restore_from_backup(workdir: Path, abs_file: Path, rel_file: Path) -> None:
     src = backup_path_for(workdir, rel_file)
     if not src.exists():
         raise FileNotFoundError(f"Missing backup for restore: {src}")
-    shutil.copy2(src, abs_file)
+    # Use copy (not copy2) so mtime updates and Make/ninja rebuild the target.
+    shutil.copy(src, abs_file)
 
 
 def indent_for_line(lines: Sequence[str], body_start: int) -> str:
@@ -541,19 +709,45 @@ def apply_mutant(
     func: FunctionRecord,
     mutant: MutantSpec,
 ) -> None:
-    """Replace the function body with default-return lines only."""
+    """Replace the function body with default-return lines only (keep `{` `}`)."""
     text = abs_file.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines(keepends=True)
+    plain = [ln.rstrip("\n") for ln in lines]
 
-    indent = indent_for_line([ln.rstrip("\n") for ln in lines], func.body_start)
+    indent = indent_for_line(plain, func.body_start)
     new_body_lines = [f"{indent}{stmt}\n" for stmt in mutant.lines]
 
-    new_lines = (
-        lines[: func.body_start]
-        + new_body_lines
-        + lines[func.body_end + 1 :]
+    line_at_start = lines[func.body_start] if func.body_start < len(lines) else ""
+    is_one_line_body = (
+        func.body_start == func.body_end
+        and "{" in line_at_start
+        and "}" in line_at_start
     )
+
+    if is_one_line_body:
+        # `int f() { return 0; }` on a single source line.
+        open_idx = line_at_start.index("{")
+        rebuilt = (
+            line_at_start[: open_idx + 1]
+            + "\n"
+            + "".join(new_body_lines)
+            + f"{indent}}}\n"
+        )
+        new_lines = lines[: func.body_start] + [rebuilt] + lines[func.body_start + 1 :]
+    elif func.body_end < func.body_start:
+        # Empty body `{` followed immediately by `}` on the next line.
+        insert_at = func.body_start
+        new_lines = lines[:insert_at] + new_body_lines + lines[insert_at:]
+    else:
+        new_lines = (
+            lines[: func.body_start]
+            + new_body_lines
+            + lines[func.body_end + 1 :]
+        )
+
     abs_file.write_text("".join(new_lines), encoding="utf-8")
+    # Bump mtime so Make-style build tools pick up the mutation after restore/copy.
+    abs_file.touch()
 
 
 # -----------------------------------------------------------------------------
@@ -758,13 +952,27 @@ def write_csv(path: Path, rows: Sequence[SweepRow]) -> None:
 
 
 def cmd_discover(args: argparse.Namespace) -> int:
-    """List functions under --source-root and optionally write JSON."""
-    source_root = Path(args.source_root).resolve()
+    """List functions under the source tree and optionally write JSON."""
     exclude = frozenset(args.exclude_dir or []) | DEFAULT_EXCLUDE_DIR_PARTS
+
+    if not args.workdir and not args.source_root:
+        print("error: specify --workdir and/or --source-root", file=sys.stderr)
+        return 1
+
+    workdir = Path(args.workdir).resolve() if args.workdir else Path(".").resolve()
+    explicit = Path(args.source_root).resolve() if args.source_root else None
+    source_root = infer_source_root(workdir, explicit, exclude)
 
     if not source_root.is_dir():
         print(f"error: source root not found: {source_root}", file=sys.stderr)
         return 1
+
+    if explicit is None:
+        n_files = count_source_files(source_root, exclude)
+        print(
+            f"Inferred source-root: {source_root} ({n_files} C/C++ file(s))",
+            file=sys.stderr,
+        )
 
     records = discover_all(source_root, exclude)
     payload = [
@@ -801,10 +1009,11 @@ def cmd_discover(args: argparse.Namespace) -> int:
 def cmd_sweep(args: argparse.Namespace) -> int:
     """Run the mutation sweep loop."""
     workdir = Path(args.workdir).resolve()
-    source_root = Path(args.source_root).resolve()
     out_csv = Path(args.out).resolve()
     exclude = frozenset(args.exclude_dir or []) | DEFAULT_EXCLUDE_DIR_PARTS
     timeout = args.timeout
+    explicit = Path(args.source_root).resolve() if args.source_root else None
+    source_root = infer_source_root(workdir, explicit, exclude)
 
     if not workdir.is_dir():
         print(f"error: workdir not found: {workdir}", file=sys.stderr)
@@ -812,6 +1021,13 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     if not source_root.is_dir():
         print(f"error: source root not found: {source_root}", file=sys.stderr)
         return 1
+
+    if explicit is None:
+        n_files = count_source_files(source_root, exclude)
+        print(
+            f"Inferred source-root: {source_root} ({n_files} C/C++ file(s))",
+            file=sys.stderr,
+        )
 
     config = SweepConfig(
         workdir=workdir,
@@ -833,8 +1049,10 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
     print(
         f"Sweeping {len(records)} function(s); workdir={workdir}\n"
+        f"  source-root: {source_root}\n"
         f"  build: {config.build_command}\n"
-        f"  test:  {config.test_command}\n"
+        f"  test:  {config.test_command}\n",
+        file=sys.stderr,
     )
 
     rows: list[SweepRow] = []
@@ -920,9 +1138,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="List functions under a source tree (requires ctags).",
     )
     p_discover.add_argument(
+        "--workdir",
+        help="Project root used to infer the scan path when --source-root is omitted.",
+    )
+    p_discover.add_argument(
         "--source-root",
-        required=True,
-        help="Root directory to scan (e.g. ultrajson/src).",
+        help="Directory to scan for C/C++ (default: infer from --workdir).",
     )
     p_discover.add_argument(
         "--out",
@@ -948,8 +1169,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sweep.add_argument(
         "--source-root",
-        required=True,
-        help="Root of C/C++ sources to mutate (e.g. ultrajson/src).",
+        help=(
+            "Root of C/C++ sources to mutate. "
+            "If omitted, inferred from --workdir (e.g. src/, libCacheSim/libCacheSim/)."
+        ),
     )
     p_sweep.add_argument(
         "--build-command",
