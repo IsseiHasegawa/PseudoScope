@@ -7,11 +7,11 @@ Step 3 (implemented): ``locate`` — find the function/method body range.
 Step 4 (implemented): ``mutate`` — generate default-return mutations in memory.
 Step 5 (implemented): ``workspace`` — write mutated source to disk and restore
 the original (pair write with restore in a ``finally`` block).
+Step 6 (implemented): ``runner`` — run the test command and capture results.
 
 Future steps (not implemented yet):
 
-  run test command
-  restore original source
+  restore original source (orchestrated with mutation tests in ``finally``)
   write JSON results
 
 The CLI entry point should eventually orchestrate those stages using a

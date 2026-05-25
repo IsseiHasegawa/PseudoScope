@@ -5,8 +5,9 @@ Step 1: parse and validate CLI input.
 Step 2: read the target source file into memory.
 Step 3: locate the target function body range.
 Step 4: generate default-return mutations in memory.
+Step 6: run a baseline test command (no mutation writes yet).
 
-This module does not write files to disk, run tests, or write JSON.
+This module does not write mutated source to disk or write JSON.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from pseudoscope.mutate import (
     replacement_return_line,
 )
 from pseudoscope.models import ConfigError, PseudoScopeConfig
+from pseudoscope.runner import TestRunError, TestRunResult, run_test_command
 from pseudoscope.source import SourceFile, SourceReadError, read_source_file
 from pseudoscope.validation import build_config
 
@@ -37,8 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pseudoscope",
         description=(
             "PseudoScope detects pseudo-tested code in C/C++ projects. "
-            "Current release: Steps 1–4 — validate input, read source, "
-            "locate the function body, and generate default-return mutations."
+            "Current release: Steps 1–4 and baseline test — validate input, "
+            "read source, locate the function body, generate mutations, "
+            "and run one baseline test command."
         ),
     )
     parser.add_argument(
@@ -63,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--test-command",
         required=True,
         metavar="CMD",
-        help="Shell command to run tests from the project root (validated now, not executed).",
+        help="Shell command to run tests from the project root.",
     )
     parser.add_argument(
         "--output",
@@ -117,6 +120,17 @@ def print_mutations_summary(mutations: list[MutatedSource]) -> None:
     print("Replacement bodies:")
     for mutation in mutations:
         print(f"  - {replacement_return_line(mutation.replacement_body)}")
+
+
+def print_baseline_test_summary(result: TestRunResult) -> None:
+    """Print a short summary after the baseline test command runs."""
+    print()
+    print("Baseline test command executed.")
+    print(f"Exit code: {result.exit_code}")
+    print(f"Timed out: {result.timed_out}")
+    print(f"Runtime: {result.runtime_seconds:.2f} seconds")
+    print(f"Stdout characters: {len(result.stdout)}")
+    print(f"Stderr characters: {len(result.stderr)}")
 
 
 def print_location_summary(location: FunctionBodyLocation) -> None:
@@ -187,8 +201,17 @@ def run_step_generate_mutations(
     return generate_default_return_mutations(source, location)
 
 
+def run_step_run_baseline_test(config: PseudoScopeConfig) -> TestRunResult:
+    """
+    Step 6: run the configured test command once as a baseline.
+
+    Does not write mutated source. Raises :class:`TestRunError` on start failure.
+    """
+    return run_test_command(config)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point: validate, read, locate, mutate; print summaries."""
+    """Entry point: validate, read, locate, mutate, baseline test; print summaries."""
     try:
         config = run_step_validate_input(argv)
     except ConfigError as exc:
@@ -220,6 +243,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print_mutations_summary(mutations)
+
+    try:
+        baseline = run_step_run_baseline_test(config)
+    except TestRunError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print_baseline_test_summary(baseline)
     return 0
 
 
