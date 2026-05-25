@@ -1,9 +1,0 @@
-file,function,mutant_id,result
-calc.c,add,zero,fail
-calc.c,add,one,fail
-calc.c,multiply,zero,fail
-calc.c,multiply,one,fail
-calc.c,dead_code_transform,zero,pass
-calc.c,dead_code_transform,one,pass
-calc.c,unused_scale,zero,pass
-calc.c,unused_scale,one,pass
