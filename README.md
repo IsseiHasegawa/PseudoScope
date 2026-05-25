@@ -2,154 +2,269 @@
 
 Research prototype for detecting **pseudo-tested** C/C++ code, inspired by [PSEUDOSWEEP](https://github.com/mdecourse/PSEUDOSWEEP).
 
-**Idea:** replace a function body with a minimal default return, rebuild, and run the project’s test suite. If tests still pass, the function may be **pseudo-tested** (the suite did not detect the mutation).
+**Idea:** replace a function body with minimal default-return statements, **rebuild** the project, and run its test suite. If tests still pass, the function may be **pseudo-tested** (the suite did not detect the mutation).
 
-**Current implementation:** Steps 1–4 — validate CLI input, read the target source file, locate the function body range, and generate default-return mutations in memory. Later steps will write mutations to disk, run tests, restore the source, and write JSON results.
+This repository contains:
+
+- **`pseudoscope/`** — the analysis tool (Python CLI, Steps 1–8)
+- **`ultrajson/`** — a bundled study target ([UltraJSON](https://github.com/ultrajson/ultrajson), C extension + pytest)
+
+---
+
+## What PseudoScope does (pipeline)
+
+For **one** function in **one** source file:
+
+1. Validate CLI input
+2. Read the source file
+3. Locate the function body (`{` … `}`)
+4. Generate default-return mutations in memory
+5. Run a **baseline** test command
+6. For each mutation: **write** mutated source → **run tests** → **restore** original source (`finally`)
+7. Classify the function and write JSON results
+8. Print a compact table in the terminal
+
+The source file on disk is **always restored** after each mutation test.
+
+---
+
+## Requirements
+
+| Component | Version / notes |
+|-----------|-----------------|
+| Python | 3.10+ |
+| OS | macOS or Linux recommended (C toolchain for UltraJSON) |
+| UltraJSON target | C/C++ compiler, `pip`, `pytest` |
+| Shell | `--test-command` runs with `shell=True` |
+
+---
+
+## Quick start (clone → first run)
+
+### 1. Clone the repository
+
+```bash
+git clone git@github.com:IsseiHasegawa/PesudoScope.git
+cd PesudoScope
+```
+
+If `ultrajson/` is empty after clone, initialize the nested repository (when used as a submodule):
+
+```bash
+git submodule update --init --recursive
+```
+
+Confirm the target tree exists:
+
+```bash
+ls ultrajson/src ultrajson/tests
+```
+
+### 2. Prepare UltraJSON (test subject)
+
+PseudoScope runs tests **from `--project-root`**. For UltraJSON, create a venv **inside `ultrajson/`** and verify tests pass:
+
+```bash
+cd ultrajson
+
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
+pip install -e .
+pytest
+```
+
+You should see all tests pass (379 tests at time of writing). Then return to the repo root:
+
+```bash
+cd ..
+```
+
+### 3. Run PseudoScope (from repo root)
+
+**Important:**
+
+- Run `python3 -m pseudoscope` from **`PesudoScope/`** (parent of the `pseudoscope/` package), **not** from inside `pseudoscope/` or `ultrajson/`.
+- Do **not** keep `ultrajson/.venv` active when starting PseudoScope (that Python does not include the tool). Deactivate first: `deactivate`.
+
+UltraJSON is a **C extension**. The test command must **rebuild** after each source mutation. Use a command like:
+
+```bash
+cd /path/to/PesudoScope
+
+python3 -m pseudoscope \
+  --project-root ultrajson \
+  --file src/ujson/python/objToJSON.c \
+  --function Tuple_iterNext \
+  --test-command "source .venv/bin/activate && pip install -e . && pytest" \
+  --output ultrajson/pseudoscope-results.json \
+  --timeout 120
+```
+
+`--output` paths relative to `--project-root` are resolved under `ultrajson/`. Prefer `ultrajson/pseudoscope-results.json` or `pseudoscope-results.json` — **not** `ultrajson/ultrajson/...`.
+
+### 4. Check the results
+
+**Terminal** — end of the run:
+
+- JSON summary (classification, survival rate)
+- Table:
+
+  ```
+  File path | Function | Mutant | Test result
+  src/ujson/python/objToJSON.c | Tuple_iterNext | return 0; | FAIL (detected)
+  ...
+  ```
+
+**JSON file** — e.g. `ultrajson/pseudoscope-results.json`:
+
+- `baseline`, `classification`, `mutations`, `table_rows`
+- Internal mutation statuses: `survived`, `killed`, `timeout`
+
+---
+
+## CLI reference
+
+Run from **`PesudoScope/`**:
+
+```bash
+python3 -m pseudoscope --help
+```
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--project-root` | yes | — | Project root; `cwd` for `--test-command` |
+| `--file` | yes | — | Source path **relative** to project root |
+| `--function` | yes | — | Function or method name in that file |
+| `--test-command` | yes | — | Shell command (should include **build** for C/C++) |
+| `--output` | no | `pseudoscope-results.json` | JSON output (relative → under project root) |
+| `--timeout` | no | `60` | Per-test-command timeout (seconds) |
+
+### Example: minimal dry run (no real pytest)
+
+Only checks Steps 1–4 style flow if you use a no-op test command (not valid for real C analysis):
+
+```bash
+python3 -m pseudoscope \
+  --project-root ultrajson \
+  --file src/ujson/python/objToJSON.c \
+  --function Tuple_iterNext \
+  --test-command "true" \
+  --output ultrajson/pseudoscope-results.json
+```
+
+---
+
+## Understanding the output
+
+### Terminal labels (human-facing)
+
+| Label | Meaning |
+|-------|---------|
+| `PASS (PT candidate)` | Tests passed after mutation (`exit_code == 0`) |
+| `FAIL (detected)` | Tests failed after mutation |
+| `TIMEOUT` | Test command timed out |
+
+### Function classification (JSON `classification.label`)
+
+| Label | Meaning |
+|-------|---------|
+| `pseudo_tested_candidate` | All mutations survived |
+| `not_pseudo_tested` | All mutations killed |
+| `partially_tested` | Mix of survived and killed |
+| `inconclusive_timeout` | At least one mutation timed out |
+| `baseline_failed` | Baseline failed; mutation tests skipped |
+| `not_analyzed` | No mutation results |
+
+### Baseline failure behavior
+
+If the baseline test fails or times out, PseudoScope:
+
+- Prints a **warning** on stderr
+- **Skips** mutation tests
+- Still writes JSON with `classification.label = "baseline_failed"` and empty `mutations` / `table_rows`
+
+---
+
+## C/C++ projects: rebuild is mandatory
+
+| What you change | Before `pytest` |
+|-----------------|-----------------|
+| `src/**/*.c`, `src/**/*.cc`, … | **Rebuild** (e.g. `pip install -e .`, `cmake --build`, `make`) |
+| `tests/*.py` only | Usually `pytest` alone is enough |
+
+If `--test-command` is only `pytest`, mutations are written to `.c` files but the **old `.so` is still loaded**, so results look like false **PASS (PT candidate)**. Always include your project’s build step in `--test-command`.
+
+---
 
 ## Repository layout
 
 ```
 PesudoScope/
 ├── README.md
-├── pseudoscope/              # Python package (Step 1 CLI)
-│   ├── cli.py
+├── pseudoscope/                 # Python package
+│   ├── __main__.py              # python -m pseudoscope
+│   ├── cli.py                   # CLI orchestration
+│   ├── validation.py            # Step 1
+│   ├── source.py                # Step 2
+│   ├── locate.py                # Step 3
+│   ├── mutate.py                # Step 4
+│   ├── workspace.py             # Step 5 (write / restore)
+│   ├── runner.py                # Step 6 (run tests)
+│   ├── executor.py              # Step 7 (mutation loop)
+│   ├── results.py               # Step 8 (JSON + table)
 │   ├── models.py
-│   ├── validation.py
-│   ├── source.py             # Step 2: read target file
-│   ├── locate.py             # Step 3: locate function body
-│   ├── mutate.py             # Step 4: default-return mutations
-│   └── pipeline.py           # Pipeline step identifiers
-└── ultrajson/                # Primary study target (nested git repo)
+│   └── pipeline.py
+└── ultrajson/                   # Study target (nested git repo)
     ├── src/
     ├── tests/
-    └── baseline_test_result.txt
+    ├── .venv/                   # create locally (not always in git)
+    └── pseudoscope-results.json # example output path
 ```
 
-## Requirements
+---
 
-- Python 3.10+
-- For **ultrajson**: C/C++ toolchain, `pip`, and `pytest`
+## Troubleshooting
 
-## PseudoScope CLI (Steps 1–4)
+### `No module named pseudoscope`
 
-Run from the `PesudoScope/` directory:
+- **Cause:** Running from `ultrajson/` with `ultrajson/.venv` active, or from inside `pseudoscope/` subfolder.
+- **Fix:**
 
-```bash
-python3 -m pseudoscope --help
-```
+  ```bash
+  cd /path/to/PesudoScope
+  deactivate
+  python3 -m pseudoscope ...
+  ```
 
-### Arguments
+### Baseline `Exit code: 127` / `pytest: command not found`
 
-| Argument | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `--project-root` | yes | — | Project root; tests will run from here |
-| `--file` | yes | — | Source path **relative** to project root |
-| `--function` | yes | — | Function or method name in that file |
-| `--test-command` | yes | — | Shell command for tests (validated, not executed yet) |
-| `--output` | no | `pseudoscope-results.json` | Planned JSON path (relative paths resolve under project root) |
-| `--timeout` | no | `60` | Planned test timeout in seconds |
+- **Cause:** `pytest` not on `PATH` when PseudoScope runs the command (venv not activated in `--test-command`).
+- **Fix:** Use e.g. `"source .venv/bin/activate && pip install -e . && pytest"`.
 
-### Example (ultrajson)
+### All mutations `PASS` but manual edit + rebuild fails tests
 
-```bash
-cd PesudoScope
+- **Cause:** `--test-command` did not rebuild the C extension.
+- **Fix:** Add `pip install -e .` (or your build) before `pytest` in `--test-command`.
 
-python3 -m pseudoscope \
-  --project-root ultrajson \
-  --file src/ujson/python/objToJSON.c \
-  --function Tuple_iterNext \
-  --test-command "pytest"
-```
+### No table at end of run
 
-On success:
+- **Cause:** `baseline_failed` or zero mutations → empty `table_rows`.
+- **Fix:** Fix baseline first; check stderr warning.
 
-```
-PseudoScope configuration loaded successfully.
+### `git commit` only shows `ultrajson (modified content)`
 
-Project root: .../ultrajson
-Target file: .../ultrajson/src/ujson/python/objToJSON.c
-Function: Tuple_iterNext
-Test command: pytest
-Output file: .../ultrajson/pseudoscope-results.json
-Timeout: 60 seconds
+- **Cause:** `ultrajson` is a separate git repository inside PesudoScope.
+- **Fix:** Commit inside `ultrajson/` first, then `git add ultrajson` in PesudoScope.
 
-Source file loaded successfully.
-Source lines: 958
-Encoding: utf-8
-
-Function body located successfully.
-Function: Tuple_iterNext
-Start line: 159
-End line: 171
-Body range: 5128-5340
-
-Default-return mutations generated successfully.
-Mutation type: replace_body_with_default_return
-Return type category: integer
-Number of mutations: 2
-Replacement bodies:
-  - return 0;
-  - return 1;
-```
-
-The body range is half-open: `source.content[body_start:body_end]` is everything inside `{` … `}`.
-
-### What is not implemented yet
-
-- Does not write mutated source to disk
-- Does not run `--test-command`
-- Does not create the output JSON file
-
-See `pseudoscope/pipeline.py` for the planned full workflow.
-
-## UltraJSON — build and test
-
-Primary target: [UltraJSON](https://github.com/ultrajson/ultrajson) in `ultrajson/`.
-
-`ujson` is a C extension (`ujson.cpython-*.so`). **After every change to C/C++ under `src/`, rebuild before running tests.** `pytest` alone reuses the last built `.so`.
-
-| Changed files | Rebuild needed? |
-|---------------|-----------------|
-| `src/**/*.c`, `src/**/*.cc` | Yes — `pip install -e .` |
-| `tests/*.py` only | No — `pytest` is enough |
-
-### First-time setup
-
-```bash
-cd ultrajson
-
-python3 -m venv .venv
-source .venv/bin/activate
-
-pip install -e .
-pytest
-```
-
-### Day-to-day (after editing C)
-
-```bash
-cd ultrajson
-source .venv/bin/activate
-pip install -e .
-pytest
-```
-
-Quick check:
-
-```bash
-python3 -c "import ujson; print(ujson.dumps({'ok': 1}))"
-```
-
-Passing baseline: `ultrajson/baseline_test_result.txt` (379 tests at time of recording).
+---
 
 ## Optional: count functions with ctags
 
-Run inside `ultrajson/` to see how many functions each file defines:
+Inside `ultrajson/`:
 
 ```bash
-cd ultrajson
-
-find src \( -name "*.c" -o -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) -type f -print0 |
+find src \( -name "*.c" -o -name "*.cpp" -o -name "*.cc" \) -type f -print0 |
 while IFS= read -r -d '' file; do
   count=$(ctags -x --kinds-C=f --kinds-C++=f "$file" 2>/dev/null | wc -l | tr -d ' ')
   printf "%s\t%s\n" "$file" "$count"
@@ -158,17 +273,23 @@ done
 
 Requires [Universal Ctags](https://github.com/universal-ctags/ctags) on `PATH`.
 
+---
+
 ## Roadmap
 
-| Step | Status | Module (planned) |
-|------|--------|------------------|
-| Validate CLI input | done | `cli`, `validation` |
+| Step | Status | Module |
+|------|--------|--------|
+| Validate CLI input | done | `validation`, `cli` |
 | Read target file | done | `source` |
-| Locate function body | planned | `locate` |
-| Delete / replace body | planned | `mutate` |
-| Run test command | planned | `runner` |
-| Restore original file | planned | `mutate` |
-| Write JSON results | planned | `results` |
+| Locate function body | done | `locate` |
+| Generate mutations | done | `mutate` |
+| Write / restore source | done | `workspace` |
+| Run baseline tests | done | `runner` |
+| Mutation test loop | done | `executor` |
+| JSON + classification + table | done | `results` |
+| Multi-function sweep | planned | — |
+
+---
 
 ## References
 
