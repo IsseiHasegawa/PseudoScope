@@ -36,6 +36,7 @@ from pseudoscope.models import ConfigError, PseudoScopeConfig
 from pseudoscope.results import (
     ResultWriteError,
     build_function_analysis_result,
+    display_status,
     write_json_result,
 )
 from pseudoscope.runner import TestRunError, TestRunResult, run_test_command
@@ -130,16 +131,6 @@ def print_mutations_summary(mutations: list[MutatedSource]) -> None:
         print(f"  - {replacement_return_line(mutation.replacement_body)}")
 
 
-def display_status(status: str) -> str:
-    """Map internal mutation test status to a user-facing CLI label."""
-    labels = {
-        "survived": "PASS (PT candidate)",
-        "killed": "FAIL (detected)",
-        "timeout": "TIMEOUT",
-    }
-    return labels.get(status, status)
-
-
 def print_mutation_tests_summary(results: list[MutationRunResult]) -> None:
     """Print a short summary after all mutation tests complete."""
     pass_count = sum(1 for item in results if item.status == "survived")
@@ -178,6 +169,20 @@ def print_json_result_summary(result: dict[str, Any]) -> None:
     print(f"Output file: {result['output_path']}")
     print(f"Function classification: {classification['label']}")
     print(f"Survival rate: {classification['survival_rate']:.2f}")
+
+
+def print_result_table(table_rows: list[dict[str, Any]]) -> None:
+    """Print the compact mutation result table."""
+    if not table_rows:
+        return
+
+    print()
+    print("File path | Function | Mutant | Test result")
+    for row in table_rows:
+        print(
+            f"{row['file_path']} | {row['function']} | "
+            f"{row['mutant']} | {row['test_result']}"
+        )
 
 
 def print_baseline_test_summary(result: TestRunResult) -> None:
@@ -374,6 +379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print_json_result_summary(analysis)
+    print_result_table(analysis.get("table_rows", []))
     return 0
 
 

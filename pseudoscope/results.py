@@ -1,5 +1,5 @@
 """
-Build classification and write JSON results (Step 8).
+Build classification, result table, and write JSON results (Step 8).
 
 Uses internal mutation statuses (survived, killed, timeout) unchanged in JSON.
 """
@@ -12,6 +12,7 @@ from typing import Any
 
 from pseudoscope.executor import MutationRunResult
 from pseudoscope.models import PseudoScopeConfig
+from pseudoscope.mutate import replacement_return_line
 from pseudoscope.runner import TestRunResult
 
 
@@ -43,6 +44,35 @@ def classify_function(mutation_results: list[MutationRunResult]) -> str:
     return "partially_tested"
 
 
+def display_status(status: str) -> str:
+    """Map internal mutation test status to a user-facing label."""
+    labels = {
+        "survived": "PASS (PT candidate)",
+        "killed": "FAIL (detected)",
+        "timeout": "TIMEOUT",
+    }
+    return labels.get(status, status)
+
+
+def build_result_table_rows(
+    config: PseudoScopeConfig,
+    mutation_results: list[MutationRunResult],
+) -> list[dict[str, str]]:
+    """Build compact table rows for CLI and JSON output."""
+    file_path = str(config.relative_file_path)
+    rows: list[dict[str, str]] = []
+    for result in mutation_results:
+        rows.append(
+            {
+                "file_path": file_path,
+                "function": result.function_name,
+                "mutant": replacement_return_line(result.replacement_body),
+                "test_result": display_status(result.status),
+            }
+        )
+    return rows
+
+
 def _baseline_payload(baseline: TestRunResult) -> dict[str, Any]:
     return {
         "exit_code": baseline.exit_code,
@@ -54,15 +84,18 @@ def _baseline_payload(baseline: TestRunResult) -> dict[str, Any]:
 
 
 def _mutation_payload(result: MutationRunResult) -> dict[str, Any]:
+    mutant = replacement_return_line(result.replacement_body)
     return {
         "function_name": result.function_name,
         "mutation_type": result.mutation_type,
         "return_type_category": result.return_type_category,
         "replacement_body": result.replacement_body,
+        "mutant": mutant,
         "exit_code": result.exit_code,
         "timed_out": result.timed_out,
         "runtime_seconds": result.runtime_seconds,
         "status": result.status,
+        "display_status": display_status(result.status),
         "restored": result.restored,
         "stdout": result.stdout,
         "stderr": result.stderr,
@@ -103,6 +136,7 @@ def build_function_analysis_result(
         if classification_override is not None
         else classify_function(mutation_results)
     )
+    table_rows = build_result_table_rows(config, mutation_results)
 
     return {
         "project_root": str(config.project_root),
@@ -116,6 +150,7 @@ def build_function_analysis_result(
             label=label,
         ),
         "mutations": [_mutation_payload(item) for item in mutation_results],
+        "table_rows": table_rows,
     }
 
 

@@ -23,7 +23,9 @@ from pseudoscope.mutate import (
 from pseudoscope.results import (
     ResultWriteError,
     build_function_analysis_result,
+    build_result_table_rows,
     classify_function,
+    display_status,
     write_json_result,
 )
 from pseudoscope.runner import TestRunError, TestRunResult, run_test_command
@@ -54,7 +56,9 @@ __all__ = [
     "WorkspaceError",
     "build_config",
     "build_function_analysis_result",
+    "build_result_table_rows",
     "classify_function",
+    "display_status",
     "generate_default_return_mutations",
     "locate_function_body",
     "read_source_file",

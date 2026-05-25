@@ -10,7 +10,8 @@ the original (pair write with restore in a ``finally`` block).
 Step 6 (implemented): ``runner`` — run the test command and capture results.
 Step 7 (implemented): ``executor`` — execute mutation tests using
 write → run → restore for each mutation.
-Step 8 (implemented): ``results`` — classify the function and write JSON results.
+Step 8 (implemented): ``results`` — classify the function, write JSON results,
+and build the compact result table.
 
 The CLI orchestrates Steps 1–8 for a single target function.
 """
