@@ -5,10 +5,11 @@ Step 1 (implemented): ``cli`` + ``validation`` — parse and validate input.
 Step 2 (implemented): ``source`` — read the target file from disk.
 Step 3 (implemented): ``locate`` — find the function/method body range.
 Step 4 (implemented): ``mutate`` — generate default-return mutations in memory.
+Step 5 (implemented): ``workspace`` — write mutated source to disk and restore
+the original (pair write with restore in a ``finally`` block).
 
 Future steps (not implemented yet):
 
-  write mutated source to disk
   run test command
   restore original source
   write JSON results
