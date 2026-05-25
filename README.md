@@ -4,7 +4,7 @@ Research prototype for detecting **pseudo-tested** C/C++ code, inspired by [PSEU
 
 **Idea:** replace a function body with a minimal default return, rebuild, and run the project’s test suite. If tests still pass, the function may be **pseudo-tested** (the suite did not detect the mutation).
 
-**Current implementation:** Step 1 only — parse, normalize, and validate CLI input. Later steps will read the target file, locate and mutate the function body, run tests, restore the source, and write JSON results.
+**Current implementation:** Steps 1–2 — validate CLI input and read the target source file. Later steps will locate and mutate the function body, run tests, restore the source, and write JSON results.
 
 ## Repository layout
 
@@ -15,6 +15,7 @@ PesudoScope/
 │   ├── cli.py
 │   ├── models.py
 │   ├── validation.py
+│   ├── source.py             # Step 2: read target file
 │   └── pipeline.py           # Planned steps (documentation)
 └── ultrajson/                # Primary study target (nested git repo)
     ├── src/
@@ -27,7 +28,7 @@ PesudoScope/
 - Python 3.10+
 - For **ultrajson**: C/C++ toolchain, `pip`, and `pytest`
 
-## PseudoScope CLI (Step 1)
+## PseudoScope CLI (Steps 1–2)
 
 Run from the `PesudoScope/` directory:
 
@@ -71,9 +72,10 @@ Output file: .../ultrajson/pseudoscope-results.json
 Timeout: 60 seconds
 ```
 
-### What Step 1 does not do
+### What is not implemented yet
 
-- Does not read or modify source file contents
+- Does not locate the function body in the source
+- Does not modify source file contents on disk
 - Does not run `--test-command`
 - Does not create the output JSON file
 
@@ -140,7 +142,7 @@ Requires [Universal Ctags](https://github.com/universal-ctags/ctags) on `PATH`.
 | Step | Status | Module (planned) |
 |------|--------|------------------|
 | Validate CLI input | done | `cli`, `validation` |
-| Read target file | planned | `source` |
+| Read target file | done | `source` |
 | Locate function body | planned | `locate` |
 | Delete / replace body | planned | `mutate` |
 | Run test command | planned | `runner` |

@@ -1,11 +1,11 @@
 """
-Planned analysis pipeline (documentation only for Step 1).
+Planned analysis pipeline.
 
 Step 1 (implemented): ``cli`` + ``validation`` — parse and validate input.
+Step 2 (implemented): ``source`` — read the target file from disk.
 
 Future steps (not implemented yet) will live in dedicated modules, for example:
 
-  source.py     — read the target file from disk
   locate.py     — find the function/method body (e.g. Tree-sitter)
   mutate.py     — delete/replace the body; backup and restore originals
   runner.py     — execute ``test_command`` under ``project_root`` with timeout

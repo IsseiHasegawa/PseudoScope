@@ -48,9 +48,11 @@ def normalize_relative_file_path(file: str) -> Path:
 
 def normalize_output_path(output: str, project_root: Path) -> Path:
     """Resolve ``--output`` relative to the project root when not absolute."""
-    path = Path(output.strip()).expanduser()
-    if not str(path).strip():
+    raw = output.strip()
+    if not raw:
         raise ConfigError("Output path must not be empty.")
+
+    path = Path(raw).expanduser()
     if path.is_absolute():
         return path.resolve()
     return (project_root / path).resolve()

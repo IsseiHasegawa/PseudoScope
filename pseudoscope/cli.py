@@ -1,12 +1,10 @@
 """
 Command-line interface for PseudoScope.
 
-Step 1 responsibilities only:
-  - parse arguments (argparse)
-  - normalize and validate input (``validation.build_config``)
-  - print a configuration summary
+Step 1: parse and validate CLI input.
+Step 2: read the target source file into memory.
 
-This module does not read source bodies, mutate files, run tests, or write JSON.
+This module does not locate functions, mutate files, run tests, or write JSON.
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ import sys
 from typing import Sequence
 
 from pseudoscope.models import ConfigError, PseudoScopeConfig
+from pseudoscope.source import SourceFile, SourceReadError, read_source_file
 from pseudoscope.validation import build_config
 
 
@@ -25,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pseudoscope",
         description=(
             "PseudoScope detects pseudo-tested code in C/C++ projects. "
-            "Current release: Step 1 — parse and validate CLI input only."
+            "Current release: Steps 1–2 — validate input and read the target source file."
         ),
     )
     parser.add_argument(
@@ -58,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "Planned JSON output path (default: pseudoscope-results.json). "
-            "Resolved now; the file is not created in Step 1."
+            "Resolved now; the file is not created yet."
         ),
     )
     parser.add_argument(
@@ -83,6 +82,14 @@ def print_config_summary(config: PseudoScopeConfig) -> None:
     print(f"Timeout: {config.timeout_seconds} seconds")
 
 
+def print_source_summary(source: SourceFile) -> None:
+    """Print a short summary after the source file is loaded (no file contents)."""
+    print()
+    print("Source file loaded successfully.")
+    print(f"Source lines: {source.line_count}")
+    print(f"Encoding: {source.encoding}")
+
+
 def run_step_validate_input(argv: Sequence[str] | None = None) -> PseudoScopeConfig:
     """
     Step 1: parse CLI arguments and return validated configuration.
@@ -101,8 +108,21 @@ def run_step_validate_input(argv: Sequence[str] | None = None) -> PseudoScopeCon
     )
 
 
+def run_step_read_source(
+    config: PseudoScopeConfig,
+    *,
+    encoding: str = "utf-8",
+) -> SourceFile:
+    """
+    Step 2: read the target source file into memory.
+
+    Raises :class:`SourceReadError` on read or decode failure.
+    """
+    return read_source_file(config, encoding=encoding)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point: validate input and print summary; no further pipeline steps."""
+    """Entry point: validate input, read source, print summaries."""
     try:
         config = run_step_validate_input(argv)
     except ConfigError as exc:
@@ -110,6 +130,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print_config_summary(config)
+
+    try:
+        source = run_step_read_source(config)
+    except SourceReadError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print_source_summary(source)
     return 0
 
 
