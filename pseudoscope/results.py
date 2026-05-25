@@ -1,0 +1,135 @@
+"""
+Build classification and write JSON results (Step 8).
+
+Uses internal mutation statuses (survived, killed, timeout) unchanged in JSON.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from pseudoscope.executor import MutationRunResult
+from pseudoscope.models import PseudoScopeConfig
+from pseudoscope.runner import TestRunResult
+
+
+class ResultWriteError(Exception):
+    """Raised when the JSON result file cannot be written."""
+
+
+def classify_function(mutation_results: list[MutationRunResult]) -> str:
+    """
+    Classify the target function from mutation test outcomes.
+
+    Returns one of: ``not_analyzed``, ``inconclusive_timeout``,
+    ``pseudo_tested_candidate``, ``not_pseudo_tested``, ``partially_tested``.
+    """
+    if not mutation_results:
+        return "not_analyzed"
+
+    if any(result.status == "timeout" for result in mutation_results):
+        return "inconclusive_timeout"
+
+    statuses = {result.status for result in mutation_results}
+    if statuses == {"survived"}:
+        return "pseudo_tested_candidate"
+    if statuses == {"killed"}:
+        return "not_pseudo_tested"
+    if "survived" in statuses and "killed" in statuses:
+        return "partially_tested"
+
+    return "partially_tested"
+
+
+def _baseline_payload(baseline: TestRunResult) -> dict[str, Any]:
+    return {
+        "exit_code": baseline.exit_code,
+        "timed_out": baseline.timed_out,
+        "runtime_seconds": baseline.runtime_seconds,
+        "stdout": baseline.stdout,
+        "stderr": baseline.stderr,
+    }
+
+
+def _mutation_payload(result: MutationRunResult) -> dict[str, Any]:
+    return {
+        "function_name": result.function_name,
+        "mutation_type": result.mutation_type,
+        "return_type_category": result.return_type_category,
+        "replacement_body": result.replacement_body,
+        "exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "runtime_seconds": result.runtime_seconds,
+        "status": result.status,
+        "restored": result.restored,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+
+
+def _classification_payload(
+    mutation_results: list[MutationRunResult],
+    *,
+    label: str,
+) -> dict[str, Any]:
+    total = len(mutation_results)
+    survived = sum(1 for item in mutation_results if item.status == "survived")
+    killed = sum(1 for item in mutation_results if item.status == "killed")
+    timeout = sum(1 for item in mutation_results if item.status == "timeout")
+    survival_rate = (survived / total) if total else 0.0
+
+    return {
+        "label": label,
+        "survival_rate": survival_rate,
+        "total_mutations": total,
+        "survived": survived,
+        "killed": killed,
+        "timeout": timeout,
+    }
+
+
+def build_function_analysis_result(
+    config: PseudoScopeConfig,
+    baseline: TestRunResult,
+    mutation_results: list[MutationRunResult],
+    *,
+    classification_override: str | None = None,
+) -> dict[str, Any]:
+    """Build a JSON-serializable analysis result for one function."""
+    label = (
+        classification_override
+        if classification_override is not None
+        else classify_function(mutation_results)
+    )
+
+    return {
+        "project_root": str(config.project_root),
+        "file": str(config.relative_file_path),
+        "function": config.function_name,
+        "test_command": config.test_command,
+        "output_path": str(config.output_path),
+        "baseline": _baseline_payload(baseline),
+        "classification": _classification_payload(
+            mutation_results,
+            label=label,
+        ),
+        "mutations": [_mutation_payload(item) for item in mutation_results],
+    }
+
+
+def write_json_result(result: dict[str, Any], output_path: Path) -> None:
+    """Write ``result`` as pretty-printed UTF-8 JSON to ``output_path``."""
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(result, indent=2, ensure_ascii=False)
+        output_path.write_text(f"{payload}\n", encoding="utf-8")
+    except OSError as exc:
+        raise ResultWriteError(
+            f"Failed to write JSON result to {output_path}: {exc}"
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise ResultWriteError(
+            f"Failed to encode JSON result for {output_path}: {exc}"
+        ) from exc

@@ -7,15 +7,14 @@ Step 3: locate the target function body range.
 Step 4: generate default-return mutations in memory.
 Step 6: run a baseline test command.
 Step 7: run mutation tests (write → test → restore per mutation).
-
-This module does not write JSON results.
+Step 8: classify results and write JSON to ``config.output_path``.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from typing import Sequence
+from typing import Any, Sequence
 
 from pseudoscope.locate import (
     FunctionBodyLocation,
@@ -34,6 +33,11 @@ from pseudoscope.executor import (
     run_mutation_tests,
 )
 from pseudoscope.models import ConfigError, PseudoScopeConfig
+from pseudoscope.results import (
+    ResultWriteError,
+    build_function_analysis_result,
+    write_json_result,
+)
 from pseudoscope.runner import TestRunError, TestRunResult, run_test_command
 from pseudoscope.source import SourceFile, SourceReadError, read_source_file
 from pseudoscope.validation import build_config
@@ -46,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "PseudoScope detects pseudo-tested code in C/C++ projects. "
             "Current release: validate input, read source, locate function, "
-            "generate mutations, baseline test, and per-mutation tests."
+            "generate mutations, run tests, and write JSON results."
         ),
     )
     parser.add_argument(
@@ -78,8 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="pseudoscope-results.json",
         metavar="PATH",
         help=(
-            "Planned JSON output path (default: pseudoscope-results.json). "
-            "Resolved now; the file is not created yet."
+            "JSON output path (default: pseudoscope-results.json)."
         ),
     )
     parser.add_argument(
@@ -127,18 +130,28 @@ def print_mutations_summary(mutations: list[MutatedSource]) -> None:
         print(f"  - {replacement_return_line(mutation.replacement_body)}")
 
 
+def display_status(status: str) -> str:
+    """Map internal mutation test status to a user-facing CLI label."""
+    labels = {
+        "survived": "PASS (PT candidate)",
+        "killed": "FAIL (detected)",
+        "timeout": "TIMEOUT",
+    }
+    return labels.get(status, status)
+
+
 def print_mutation_tests_summary(results: list[MutationRunResult]) -> None:
     """Print a short summary after all mutation tests complete."""
-    survived = sum(1 for item in results if item.status == "survived")
-    killed = sum(1 for item in results if item.status == "killed")
-    timeout = sum(1 for item in results if item.status == "timeout")
+    pass_count = sum(1 for item in results if item.status == "survived")
+    fail_count = sum(1 for item in results if item.status == "killed")
+    timeout_count = sum(1 for item in results if item.status == "timeout")
 
     print()
     print("Mutation tests executed.")
     print(f"Total mutations: {len(results)}")
-    print(f"Survived: {survived}")
-    print(f"Killed: {killed}")
-    print(f"Timeout: {timeout}")
+    print(f"PASS (PT candidate): {pass_count}")
+    print(f"FAIL (detected): {fail_count}")
+    print(f"TIMEOUT: {timeout_count}")
     print()
     print("Results:")
     for result in results:
@@ -148,7 +161,23 @@ def print_mutation_tests_summary(results: list[MutationRunResult]) -> None:
             if result.timed_out
             else str(result.exit_code)
         )
-        print(f"  - {label} -> {result.status}, exit code {exit_display}")
+        status_label = display_status(result.status)
+        print(f"  - {label} -> {status_label}, exit code {exit_display}")
+
+
+def baseline_test_succeeded(baseline: TestRunResult) -> bool:
+    """Return True when the baseline test completed successfully (exit code 0)."""
+    return not baseline.timed_out and baseline.exit_code == 0
+
+
+def print_json_result_summary(result: dict[str, Any]) -> None:
+    """Print a short summary after the JSON result file is written."""
+    classification = result["classification"]
+    print()
+    print("JSON result written.")
+    print(f"Output file: {result['output_path']}")
+    print(f"Function classification: {classification['label']}")
+    print(f"Survival rate: {classification['survival_rate']:.2f}")
 
 
 def print_baseline_test_summary(result: TestRunResult) -> None:
@@ -242,6 +271,28 @@ def run_step_run_mutation_tests(
     return run_mutation_tests(config, mutations)
 
 
+def run_step_write_results(
+    config: PseudoScopeConfig,
+    baseline: TestRunResult,
+    mutation_results: list[MutationRunResult],
+    *,
+    classification_override: str | None = None,
+) -> dict[str, Any]:
+    """
+    Step 8: build the analysis result and write JSON to ``config.output_path``.
+
+    Raises :class:`ResultWriteError` on write failure.
+    """
+    result = build_function_analysis_result(
+        config,
+        baseline,
+        mutation_results,
+        classification_override=classification_override,
+    )
+    write_json_result(result, config.output_path)
+    return result
+
+
 def run_step_run_baseline_test(config: PseudoScopeConfig) -> TestRunResult:
     """
     Step 6: run the configured test command once as a baseline.
@@ -293,13 +344,36 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print_baseline_test_summary(baseline)
 
+    mutation_results: list[MutationRunResult] = []
+    classification_override: str | None = None
+
+    if baseline_test_succeeded(baseline):
+        try:
+            mutation_results = run_step_run_mutation_tests(config, mutations)
+        except MutationExecutionError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        print_mutation_tests_summary(mutation_results)
+    else:
+        classification_override = "baseline_failed"
+        print(
+            "Warning: Baseline test failed or timed out. "
+            "Skipping mutation tests because results would be unreliable.",
+            file=sys.stderr,
+        )
+
     try:
-        mutation_results = run_step_run_mutation_tests(config, mutations)
-    except MutationExecutionError as exc:
+        analysis = run_step_write_results(
+            config,
+            baseline,
+            mutation_results,
+            classification_override=classification_override,
+        )
+    except ResultWriteError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print_mutation_tests_summary(mutation_results)
+    print_json_result_summary(analysis)
     return 0
 
 

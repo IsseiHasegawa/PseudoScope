@@ -10,13 +10,9 @@ the original (pair write with restore in a ``finally`` block).
 Step 6 (implemented): ``runner`` — run the test command and capture results.
 Step 7 (implemented): ``executor`` — execute mutation tests using
 write → run → restore for each mutation.
+Step 8 (implemented): ``results`` — classify the function and write JSON results.
 
-Future steps (not implemented yet):
-
-  write JSON results
-
-The CLI entry point should eventually orchestrate those stages using a
-:class:`~pseudoscope.models.PseudoScopeConfig` instance produced here.
+The CLI orchestrates Steps 1–8 for a single target function.
 """
 
 from __future__ import annotations
@@ -28,7 +24,6 @@ STEP_GENERATE_MUTATIONS = "generate_mutations"
 STEP_WRITE_MUTATED_SOURCE = "write_mutated_source"
 STEP_RUN_TESTS = "run_tests"
 STEP_EXECUTE_MUTATION_TESTS = "execute_mutation_tests"
-STEP_RESTORE_SOURCE = "restore_source"
 STEP_WRITE_RESULTS = "write_results"
 
 PIPELINE_STEPS: tuple[str, ...] = (
@@ -39,6 +34,5 @@ PIPELINE_STEPS: tuple[str, ...] = (
     STEP_WRITE_MUTATED_SOURCE,
     STEP_RUN_TESTS,
     STEP_EXECUTE_MUTATION_TESTS,
-    STEP_RESTORE_SOURCE,
     STEP_WRITE_RESULTS,
 )
