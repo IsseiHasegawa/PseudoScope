@@ -3,8 +3,10 @@ Command-line interface for PseudoScope.
 
 Step 1: parse and validate CLI input.
 Step 2: read the target source file into memory.
+Step 3: locate the target function body range.
+Step 4: generate default-return mutations in memory.
 
-This module does not locate functions, mutate files, run tests, or write JSON.
+This module does not write files to disk, run tests, or write JSON.
 """
 
 from __future__ import annotations
@@ -13,6 +15,17 @@ import argparse
 import sys
 from typing import Sequence
 
+from pseudoscope.locate import (
+    FunctionBodyLocation,
+    FunctionLocateError,
+    locate_function_body,
+)
+from pseudoscope.mutate import (
+    MutationError,
+    MutatedSource,
+    generate_default_return_mutations,
+    replacement_return_line,
+)
 from pseudoscope.models import ConfigError, PseudoScopeConfig
 from pseudoscope.source import SourceFile, SourceReadError, read_source_file
 from pseudoscope.validation import build_config
@@ -24,7 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pseudoscope",
         description=(
             "PseudoScope detects pseudo-tested code in C/C++ projects. "
-            "Current release: Steps 1–2 — validate input and read the target source file."
+            "Current release: Steps 1–4 — validate input, read source, "
+            "locate the function body, and generate default-return mutations."
         ),
     )
     parser.add_argument(
@@ -90,6 +104,34 @@ def print_source_summary(source: SourceFile) -> None:
     print(f"Encoding: {source.encoding}")
 
 
+def print_mutations_summary(mutations: list[MutatedSource]) -> None:
+    """Print a short summary after default-return mutations are generated."""
+    if not mutations:
+        return
+    first = mutations[0]
+    print()
+    print("Default-return mutations generated successfully.")
+    print(f"Mutation type: {first.mutation_type}")
+    print(f"Return type category: {first.return_type_category}")
+    print(f"Number of mutations: {len(mutations)}")
+    print("Replacement bodies:")
+    for mutation in mutations:
+        print(f"  - {replacement_return_line(mutation.replacement_body)}")
+
+
+def print_location_summary(location: FunctionBodyLocation) -> None:
+    """Print a short summary after the function body is located."""
+    print()
+    print("Function body located successfully.")
+    print(f"Function: {location.function_name}")
+    print(f"Start line: {location.start_line}")
+    print(f"End line: {location.end_line}")
+    print(
+        "Body range: "
+        f"{location.body_start_index}-{location.body_end_index}"
+    )
+
+
 def run_step_validate_input(argv: Sequence[str] | None = None) -> PseudoScopeConfig:
     """
     Step 1: parse CLI arguments and return validated configuration.
@@ -121,8 +163,32 @@ def run_step_read_source(
     return read_source_file(config, encoding=encoding)
 
 
+def run_step_locate_function(
+    source: SourceFile,
+    function_name: str,
+) -> FunctionBodyLocation:
+    """
+    Step 3: locate the target function body in ``source``.
+
+    Raises :class:`FunctionLocateError` on failure or ambiguity.
+    """
+    return locate_function_body(source, function_name)
+
+
+def run_step_generate_mutations(
+    source: SourceFile,
+    location: FunctionBodyLocation,
+) -> list[MutatedSource]:
+    """
+    Step 4: generate default-return mutations in memory.
+
+    Raises :class:`MutationError` on failure.
+    """
+    return generate_default_return_mutations(source, location)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point: validate input, read source, print summaries."""
+    """Entry point: validate, read, locate, mutate; print summaries."""
     try:
         config = run_step_validate_input(argv)
     except ConfigError as exc:
@@ -138,6 +204,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print_source_summary(source)
+
+    try:
+        location = run_step_locate_function(source, config.function_name)
+    except FunctionLocateError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print_location_summary(location)
+
+    try:
+        mutations = run_step_generate_mutations(source, location)
+    except MutationError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print_mutations_summary(mutations)
     return 0
 
 

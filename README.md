@@ -4,7 +4,7 @@ Research prototype for detecting **pseudo-tested** C/C++ code, inspired by [PSEU
 
 **Idea:** replace a function body with a minimal default return, rebuild, and run the project’s test suite. If tests still pass, the function may be **pseudo-tested** (the suite did not detect the mutation).
 
-**Current implementation:** Steps 1–2 — validate CLI input and read the target source file. Later steps will locate and mutate the function body, run tests, restore the source, and write JSON results.
+**Current implementation:** Steps 1–4 — validate CLI input, read the target source file, locate the function body range, and generate default-return mutations in memory. Later steps will write mutations to disk, run tests, restore the source, and write JSON results.
 
 ## Repository layout
 
@@ -16,7 +16,9 @@ PesudoScope/
 │   ├── models.py
 │   ├── validation.py
 │   ├── source.py             # Step 2: read target file
-│   └── pipeline.py           # Planned steps (documentation)
+│   ├── locate.py             # Step 3: locate function body
+│   ├── mutate.py             # Step 4: default-return mutations
+│   └── pipeline.py           # Pipeline step identifiers
 └── ultrajson/                # Primary study target (nested git repo)
     ├── src/
     ├── tests/
@@ -28,7 +30,7 @@ PesudoScope/
 - Python 3.10+
 - For **ultrajson**: C/C++ toolchain, `pip`, and `pytest`
 
-## PseudoScope CLI (Steps 1–2)
+## PseudoScope CLI (Steps 1–4)
 
 Run from the `PesudoScope/` directory:
 
@@ -70,12 +72,31 @@ Function: Tuple_iterNext
 Test command: pytest
 Output file: .../ultrajson/pseudoscope-results.json
 Timeout: 60 seconds
+
+Source file loaded successfully.
+Source lines: 958
+Encoding: utf-8
+
+Function body located successfully.
+Function: Tuple_iterNext
+Start line: 159
+End line: 171
+Body range: 5128-5340
+
+Default-return mutations generated successfully.
+Mutation type: replace_body_with_default_return
+Return type category: integer
+Number of mutations: 2
+Replacement bodies:
+  - return 0;
+  - return 1;
 ```
+
+The body range is half-open: `source.content[body_start:body_end]` is everything inside `{` … `}`.
 
 ### What is not implemented yet
 
-- Does not locate the function body in the source
-- Does not modify source file contents on disk
+- Does not write mutated source to disk
 - Does not run `--test-command`
 - Does not create the output JSON file
 
