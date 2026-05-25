@@ -5,9 +5,10 @@ Step 1: parse and validate CLI input.
 Step 2: read the target source file into memory.
 Step 3: locate the target function body range.
 Step 4: generate default-return mutations in memory.
-Step 6: run a baseline test command (no mutation writes yet).
+Step 6: run a baseline test command.
+Step 7: run mutation tests (write → test → restore per mutation).
 
-This module does not write mutated source to disk or write JSON.
+This module does not write JSON results.
 """
 
 from __future__ import annotations
@@ -27,6 +28,11 @@ from pseudoscope.mutate import (
     generate_default_return_mutations,
     replacement_return_line,
 )
+from pseudoscope.executor import (
+    MutationExecutionError,
+    MutationRunResult,
+    run_mutation_tests,
+)
 from pseudoscope.models import ConfigError, PseudoScopeConfig
 from pseudoscope.runner import TestRunError, TestRunResult, run_test_command
 from pseudoscope.source import SourceFile, SourceReadError, read_source_file
@@ -39,9 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pseudoscope",
         description=(
             "PseudoScope detects pseudo-tested code in C/C++ projects. "
-            "Current release: Steps 1–4 and baseline test — validate input, "
-            "read source, locate the function body, generate mutations, "
-            "and run one baseline test command."
+            "Current release: validate input, read source, locate function, "
+            "generate mutations, baseline test, and per-mutation tests."
         ),
     )
     parser.add_argument(
@@ -120,6 +125,30 @@ def print_mutations_summary(mutations: list[MutatedSource]) -> None:
     print("Replacement bodies:")
     for mutation in mutations:
         print(f"  - {replacement_return_line(mutation.replacement_body)}")
+
+
+def print_mutation_tests_summary(results: list[MutationRunResult]) -> None:
+    """Print a short summary after all mutation tests complete."""
+    survived = sum(1 for item in results if item.status == "survived")
+    killed = sum(1 for item in results if item.status == "killed")
+    timeout = sum(1 for item in results if item.status == "timeout")
+
+    print()
+    print("Mutation tests executed.")
+    print(f"Total mutations: {len(results)}")
+    print(f"Survived: {survived}")
+    print(f"Killed: {killed}")
+    print(f"Timeout: {timeout}")
+    print()
+    print("Results:")
+    for result in results:
+        label = replacement_return_line(result.replacement_body)
+        exit_display = (
+            "timeout"
+            if result.timed_out
+            else str(result.exit_code)
+        )
+        print(f"  - {label} -> {result.status}, exit code {exit_display}")
 
 
 def print_baseline_test_summary(result: TestRunResult) -> None:
@@ -201,6 +230,18 @@ def run_step_generate_mutations(
     return generate_default_return_mutations(source, location)
 
 
+def run_step_run_mutation_tests(
+    config: PseudoScopeConfig,
+    mutations: list[MutatedSource],
+) -> list[MutationRunResult]:
+    """
+    Step 7: run each mutation test (write → test → restore).
+
+    Raises :class:`MutationExecutionError` on failure.
+    """
+    return run_mutation_tests(config, mutations)
+
+
 def run_step_run_baseline_test(config: PseudoScopeConfig) -> TestRunResult:
     """
     Step 6: run the configured test command once as a baseline.
@@ -251,6 +292,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print_baseline_test_summary(baseline)
+
+    try:
+        mutation_results = run_step_run_mutation_tests(config, mutations)
+    except MutationExecutionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print_mutation_tests_summary(mutation_results)
     return 0
 
 

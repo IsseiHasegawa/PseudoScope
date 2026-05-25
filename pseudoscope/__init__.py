@@ -1,10 +1,15 @@
 """
 PseudoScope — detect pseudo-tested code in C/C++ projects.
 
-Steps 1–6 (current): validate CLI input, read source, locate function body,
-generate mutations in memory, write/restore source on disk, and run tests.
+Steps 1–7 (current): validate CLI input, read source, locate function body,
+generate mutations, write/restore on disk, run baseline and mutation tests.
 """
 
+from pseudoscope.executor import (
+    MutationExecutionError,
+    MutationRunResult,
+    run_mutation_tests,
+)
 from pseudoscope.locate import (
     FunctionBodyLocation,
     FunctionLocateError,
@@ -32,6 +37,8 @@ __all__ = [
     "FunctionBodyLocation",
     "FunctionLocateError",
     "MutationError",
+    "MutationExecutionError",
+    "MutationRunResult",
     "MutatedSource",
     "PseudoScopeConfig",
     "SourceFile",
@@ -44,6 +51,7 @@ __all__ = [
     "locate_function_body",
     "read_source_file",
     "restore_original_source",
+    "run_mutation_tests",
     "run_test_command",
     "write_mutated_source",
     "__version__",

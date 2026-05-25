@@ -8,10 +8,11 @@ Step 4 (implemented): ``mutate`` — generate default-return mutations in memory
 Step 5 (implemented): ``workspace`` — write mutated source to disk and restore
 the original (pair write with restore in a ``finally`` block).
 Step 6 (implemented): ``runner`` — run the test command and capture results.
+Step 7 (implemented): ``executor`` — execute mutation tests using
+write → run → restore for each mutation.
 
 Future steps (not implemented yet):
 
-  restore original source (orchestrated with mutation tests in ``finally``)
   write JSON results
 
 The CLI entry point should eventually orchestrate those stages using a
@@ -26,6 +27,7 @@ STEP_LOCATE_FUNCTION = "locate_function"
 STEP_GENERATE_MUTATIONS = "generate_mutations"
 STEP_WRITE_MUTATED_SOURCE = "write_mutated_source"
 STEP_RUN_TESTS = "run_tests"
+STEP_EXECUTE_MUTATION_TESTS = "execute_mutation_tests"
 STEP_RESTORE_SOURCE = "restore_source"
 STEP_WRITE_RESULTS = "write_results"
 
@@ -36,6 +38,7 @@ PIPELINE_STEPS: tuple[str, ...] = (
     STEP_GENERATE_MUTATIONS,
     STEP_WRITE_MUTATED_SOURCE,
     STEP_RUN_TESTS,
+    STEP_EXECUTE_MUTATION_TESTS,
     STEP_RESTORE_SOURCE,
     STEP_WRITE_RESULTS,
 )
