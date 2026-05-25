@@ -35,7 +35,7 @@ def _decode_output(value: str | bytes | None) -> str:
     if value is None:
         return ""
     if isinstance(value, bytes):
-        return value.decode(errors="replace")
+        return value.decode("utf-8", errors="replace")
     return value
 
 
@@ -54,6 +54,8 @@ def run_test_command(config: PseudoScopeConfig) -> TestRunResult:
             shell=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=config.timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:

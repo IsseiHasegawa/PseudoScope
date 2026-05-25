@@ -121,10 +121,17 @@ def _find_matching_delimiter(
 
 
 def _name_with_args_pattern(function_name: str) -> re.Pattern[str]:
+    """
+    Match ``name(`` only at an identifier boundary.
+
+    Avoids false positives such as ``Dict_iterNext`` inside
+    ``SortedDict_iterNext``.
+    """
     escaped = re.escape(function_name)
+    boundary = r"(?<![A-Za-z0-9_])"
     if "::" in function_name:
-        return re.compile(rf"{escaped}\s*\(")
-    return re.compile(rf"(?:[\w]+\s*::\s*)?{escaped}\s*\(")
+        return re.compile(rf"{boundary}{escaped}\s*\(")
+    return re.compile(rf"{boundary}(?:[\w]+\s*::\s*)?{escaped}\s*\(")
 
 
 def _function_name_start(match: re.Match[str], function_name: str) -> int:
