@@ -1,0 +1,2 @@
+[console_scripts]
+pseudoscope = pseudoscope.cli:main
