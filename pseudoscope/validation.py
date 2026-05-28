@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pseudoscope.discover import SWEEP_SOURCE_SUFFIXES
 from pseudoscope.models import ConfigError, PseudoScopeConfig
 
 
@@ -97,11 +98,22 @@ def validate_timeout(timeout: int) -> int:
     return timeout
 
 
+def validate_sweep_file_extension(relative_file_path: Path) -> None:
+    """Require a C/C++ source extension when running a file sweep."""
+    suffix = relative_file_path.suffix.lower()
+    if suffix not in SWEEP_SOURCE_SUFFIXES:
+        supported = ", ".join(sorted(SWEEP_SOURCE_SUFFIXES))
+        raise ConfigError(
+            f"File sweep requires a source file with extension {supported} "
+            f"(got {relative_file_path.name!r})."
+        )
+
+
 def build_config(
     *,
     project_root: str,
     file: str,
-    function: str,
+    function: str | None,
     test_command: str,
     output: str,
     timeout: int,
@@ -116,7 +128,11 @@ def build_config(
     target_file = resolve_target_file(root, relative_file_path)
     validate_target_file_exists(target_file)
 
-    function_name = _require_non_empty(function, "Function name")
+    if function is None or not function.strip():
+        function_name = None
+        validate_sweep_file_extension(relative_file_path)
+    else:
+        function_name = _require_non_empty(function, "Function name")
     command = _require_non_empty(test_command, "Test command")
     timeout_seconds = validate_timeout(timeout)
     output_path = normalize_output_path(output, root)

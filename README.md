@@ -13,7 +13,12 @@ This repository contains:
 
 ## What PseudoScope does (pipeline)
 
-For **one** function in **one** source file:
+For **one** function in **one** source file, or **all functions** in a file (file sweep):
+
+| Mode | CLI |
+|------|-----|
+| Single function | `--function NAME` |
+| File sweep | omit `--function` (`.c` / `.cpp`; functions listed via Tree-sitter) |
 
 1. Validate CLI input
 2. Read the source file
@@ -33,6 +38,7 @@ The source file on disk is **always restored** after each mutation test.
 | Component | Version / notes |
 |-----------|-----------------|
 | Python | 3.10+ |
+| PseudoScope deps | `tree-sitter`, `tree-sitter-c`, `tree-sitter-cpp` (see install below) |
 | OS | macOS or Linux recommended (C toolchain for UltraJSON) |
 | UltraJSON target | C/C++ compiler, `pip`, `pytest` |
 | Shell | `--test-command` runs with `shell=True` |
@@ -80,7 +86,22 @@ You should see all tests pass (379 tests at time of writing). Then return to the
 cd ..
 ```
 
-### 3. Run PseudoScope (from repo root)
+### 3. Install PseudoScope (from repo root)
+
+```bash
+cd /path/to/PesudoScope
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -e .
+```
+
+This installs Tree-sitter and the `pseudoscope` package. Use this venv for PseudoScope (not `ultrajson/.venv`).
+
+### 4. Run PseudoScope (single function)
+
+Run from **`PesudoScope/`** with the PseudoScope venv active:
 
 **Important:**
 
@@ -97,28 +118,46 @@ python3 -m pseudoscope \
   --file src/ujson/python/objToJSON.c \
   --function Tuple_iterNext \
   --test-command "source .venv/bin/activate && pip install -e . && pytest" \
-  --output ultrajson/pseudoscope-results.json \
+  --output pseudoscope-results.json \
   --timeout 120
 ```
 
-`--output` paths relative to `--project-root` are resolved under `ultrajson/`. Prefer `ultrajson/pseudoscope-results.json` or `pseudoscope-results.json` — **not** `ultrajson/ultrajson/...`.
+`--output` paths relative to `--project-root` resolve under `ultrajson/`. Use e.g. `pseudoscope-results.json` — **not** `ultrajson/pseudoscope-results.json` (that becomes `ultrajson/ultrajson/...`).
 
-### 4. Check the results
+### 5. File sweep (all functions in one file)
+
+Omit `--function`. PseudoScope discovers functions with Tree-sitter, runs **one baseline**, then for each function: locate → mutate → test → restore.
+
+```bash
+cd /path/to/PesudoScope
+source .venv/bin/activate
+deactivate 2>/dev/null || true   # leave ultrajson venv if active
+
+python -m pseudoscope \
+  --project-root ultrajson \
+  --file src/ujson/python/objToJSON.c \
+  --test-command "source .venv/bin/activate && pip install -e . && pytest" \
+  --output pseudoscope-sweep-objToJSON.json \
+  --timeout 120
+```
+
+**Note:** 34 functions × several mutations × full rebuild can take a long time. Try one function first (`--function Tuple_iterNext`), or use a shorter test subset in `--test-command` while experimenting.
+
+**Output:** One JSON with `"mode": "file_sweep"`, `"functions": [...]`, and `"summary"`. Final JSON is written when the sweep **completes**; a hidden partial file (`.<output>.pseudoscope-sweep.partial`) is updated after each function for best-effort recovery on interrupt.
+
+### 6. Check the results
 
 **Terminal** — end of the run:
 
 - JSON summary (classification, survival rate)
-- Table:
-
-  ```
-  File path | Function | Mutant | Test result
-  src/ujson/python/objToJSON.c | Tuple_iterNext | return 0; | FAIL (detected)
-  ...
-  ```
+- Aligned **Mutation results** table, then a **Summary (by function)** footer:
+  - **Analyzed (tested)** — functions that ran mutation tests
+  - **PASS (PT candidate)** — functions where every mutation survived
+  - **Pass rate** — `PASS / Analyzed` as a percentage
 
 **JSON file** — e.g. `ultrajson/pseudoscope-results.json`:
 
-- `baseline`, `classification`, `mutations`, `table_rows`
+- `baseline`, `classification`, `mutations`, `table_rows`, `table_summary`
 - Internal mutation statuses: `survived`, `killed`, `timeout`
 
 ---
@@ -135,7 +174,7 @@ python3 -m pseudoscope --help
 |----------|----------|---------|-------------|
 | `--project-root` | yes | — | Project root; `cwd` for `--test-command` |
 | `--file` | yes | — | Source path **relative** to project root |
-| `--function` | yes | — | Function or method name in that file |
+| `--function` | no | — | Function name; if omitted, **file sweep** (all functions) |
 | `--test-command` | yes | — | Shell command (should include **build** for C/C++) |
 | `--output` | no | `pseudoscope-results.json` | JSON output (relative → under project root) |
 | `--timeout` | no | `60` | Per-test-command timeout (seconds) |
@@ -176,6 +215,18 @@ python3 -m pseudoscope \
 | `baseline_failed` | Baseline failed; mutation tests skipped |
 | `not_analyzed` | No mutation results |
 
+### File sweep: per-function `status` / `reason`
+
+| `status` | `reason` (examples) | Meaning |
+|----------|---------------------|---------|
+| `analyzed` | — | Mutations ran (see `classification`) |
+| `skipped` | `baseline_failed` | File baseline failed; mutations not run |
+| `skipped` | `locate_failed` | Tree-sitter listed the name but regex locate failed |
+| `skipped` | `no_mutations` | Could not generate default-return mutations |
+| `skipped` | `test_error` | Write / test / restore error (non-critical) |
+
+If source **restore** fails after a mutation (`CRITICAL` in logs), the sweep **stops** immediately.
+
 ### Baseline failure behavior
 
 If the baseline test fails or times out, PseudoScope:
@@ -213,8 +264,12 @@ PesudoScope/
 │   ├── runner.py                # Step 6 (run tests)
 │   ├── executor.py              # Step 7 (mutation loop)
 │   ├── results.py               # Step 8 (JSON + table)
+│   ├── discover.py              # Tree-sitter function discovery (file sweep)
+│   ├── analysis.py              # Per-function analysis helper
+│   ├── sweep.py                 # File sweep orchestration
 │   ├── models.py
 │   └── pipeline.py
+├── pyproject.toml               # package + Tree-sitter dependencies
 └── ultrajson/                   # Study target (nested git repo)
     ├── src/
     ├── tests/
@@ -287,7 +342,8 @@ Requires [Universal Ctags](https://github.com/universal-ctags/ctags) on `PATH`.
 | Run baseline tests | done | `runner` |
 | Mutation test loop | done | `executor` |
 | JSON + classification + table | done | `results` |
-| Multi-function sweep | planned | — |
+| File sweep (Tree-sitter discover) | done | `discover`, `sweep`, `analysis` |
+| Folder-wide sweep | planned | — |
 
 ---
 

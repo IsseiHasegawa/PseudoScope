@@ -8,6 +8,10 @@ Step 4: generate default-return mutations in memory.
 Step 6: run a baseline test command.
 Step 7: run mutation tests (write → test → restore per mutation).
 Step 8: classify results and write JSON to ``config.output_path``.
+
+File sweep (omit ``--function``): discover functions with Tree-sitter, baseline
+once, then analyze each function. Final JSON is written only when the sweep
+completes; a hidden partial file is updated after each function.
 """
 
 from __future__ import annotations
@@ -33,12 +37,15 @@ from pseudoscope.executor import (
     run_mutation_tests,
 )
 from pseudoscope.models import ConfigError, PseudoScopeConfig
+from pseudoscope.discover import DiscoverError, discover_functions
 from pseudoscope.results import (
     ResultWriteError,
     build_function_analysis_result,
     display_status,
+    format_result_table,
     write_json_result,
 )
+from pseudoscope.sweep import SweepAbortError, run_file_sweep
 from pseudoscope.runner import TestRunError, TestRunResult, run_test_command
 from pseudoscope.source import SourceFile, SourceReadError, read_source_file
 from pseudoscope.validation import build_config
@@ -51,7 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "PseudoScope detects pseudo-tested code in C/C++ projects. "
             "Current release: validate input, read source, locate function, "
-            "generate mutations, run tests, and write JSON results."
+            "generate mutations, run tests, and write JSON results. "
+            "Omit --function to analyze every function in the file (file sweep)."
         ),
     )
     parser.add_argument(
@@ -68,9 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--function",
-        required=True,
+        default=None,
         metavar="NAME",
-        help="Name of the function or method to analyze in the target file.",
+        help=(
+            "Function or method to analyze. If omitted, all functions in "
+            "--file are analyzed (file sweep; .c / .cpp only)."
+        ),
     )
     parser.add_argument(
         "--test-command",
@@ -102,7 +113,10 @@ def print_config_summary(config: PseudoScopeConfig) -> None:
     print()
     print(f"Project root: {config.project_root}")
     print(f"Target file: {config.target_file}")
-    print(f"Function: {config.function_name}")
+    if config.function_name:
+        print(f"Function: {config.function_name}")
+    else:
+        print("Mode: file sweep (all functions in target file)")
     print(f"Test command: {config.test_command}")
     print(f"Output file: {config.output_path}")
     print(f"Timeout: {config.timeout_seconds} seconds")
@@ -163,26 +177,30 @@ def baseline_test_succeeded(baseline: TestRunResult) -> bool:
 
 def print_json_result_summary(result: dict[str, Any]) -> None:
     """Print a short summary after the JSON result file is written."""
-    classification = result["classification"]
     print()
     print("JSON result written.")
     print(f"Output file: {result['output_path']}")
+    if result.get("mode") == "file_sweep":
+        summary = result["summary"]
+        table_summary = result.get("table_summary", {})
+        print(f"Functions discovered: {result['function_count']}")
+        print(f"Processed: {summary['processed']}")
+        print(f"Analyzed: {summary['analyzed']}")
+        print(f"Skipped: {summary['skipped']}")
+        print(f"PASS (PT candidate): {table_summary.get('functions_passed', 0)}")
+        rate = table_summary.get("pass_rate_percent")
+        if rate is not None:
+            print(f"Pass rate: {rate:.1f}%")
+        return
+    classification = result["classification"]
     print(f"Function classification: {classification['label']}")
     print(f"Survival rate: {classification['survival_rate']:.2f}")
 
 
-def print_result_table(table_rows: list[dict[str, Any]]) -> None:
-    """Print the compact mutation result table."""
-    if not table_rows:
-        return
-
+def print_result_table(result: dict[str, Any]) -> None:
+    """Print the aligned mutation table and function-level summary."""
     print()
-    print("File path | Function | Mutant | Test result")
-    for row in table_rows:
-        print(
-            f"{row['file_path']} | {row['function']} | "
-            f"{row['mutant']} | {row['test_result']}"
-        )
+    print(format_result_table(result))
 
 
 def print_baseline_test_summary(result: TestRunResult) -> None:
@@ -307,6 +325,41 @@ def run_step_run_baseline_test(config: PseudoScopeConfig) -> TestRunResult:
     return run_test_command(config)
 
 
+def run_file_sweep_mode(config: PseudoScopeConfig) -> int:
+    """File sweep: discover all functions, baseline once, analyze each."""
+    try:
+        source = run_step_read_source(config)
+    except SourceReadError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print_source_summary(source)
+
+    try:
+        discovered = discover_functions(source)
+    except DiscoverError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print()
+    print(f"Discovered {len(discovered)} function(s) in {config.relative_file_path}:")
+    for item in discovered:
+        print(f"  - {item.name} (line {item.start_line})")
+
+    try:
+        result = run_file_sweep(config, source, discovered=discovered)
+    except SweepAbortError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except ResultWriteError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print_json_result_summary(result)
+    print_result_table(result)
+    return 0 if result.get("completed", False) else 130
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point: validate, read, locate, mutate, baseline test; print summaries."""
     try:
@@ -316,6 +369,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print_config_summary(config)
+
+    if config.function_name is None:
+        return run_file_sweep_mode(config)
 
     try:
         source = run_step_read_source(config)
@@ -379,7 +435,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print_json_result_summary(analysis)
-    print_result_table(analysis.get("table_rows", []))
+    print_result_table(analysis)
     return 0
 
 

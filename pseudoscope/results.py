@@ -10,10 +10,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pseudoscope.analysis import FunctionAnalysisOutcome
+from pseudoscope.discover import DiscoveredFunction
 from pseudoscope.executor import MutationRunResult
 from pseudoscope.models import PseudoScopeConfig
 from pseudoscope.mutate import replacement_return_line
 from pseudoscope.runner import TestRunResult
+from pseudoscope.source import SourceFile
 
 
 class ResultWriteError(Exception):
@@ -52,6 +55,132 @@ def display_status(status: str) -> str:
         "timeout": "TIMEOUT",
     }
     return labels.get(status, status)
+
+
+_TABLE_COLUMN_KEYS = ("file_path", "function", "mutant", "test_result")
+_TABLE_HEADERS = ("File", "Function", "Mutant", "Test result")
+
+
+def compute_function_table_summary(result: dict[str, Any]) -> dict[str, Any]:
+    """
+    Function-level counts for the results table footer.
+
+    *Functions analyzed* = functions that ran mutation tests.
+    *PASS (PT candidate)* = all mutations survived for that function.
+    """
+    if result.get("mode") == "file_sweep":
+        sweep = result.get("summary", {})
+        discovered = int(result.get("function_count", sweep.get("discovered", 0)))
+        analyzed = int(sweep.get("analyzed", 0))
+        passed = int(sweep.get("pseudo_tested_candidates", 0))
+    else:
+        discovered = 1
+        label = result.get("classification", {}).get("label", "not_analyzed")
+        if result.get("mutations"):
+            analyzed = 1
+            passed = 1 if label == "pseudo_tested_candidate" else 0
+        else:
+            analyzed = 0
+            passed = 0
+
+    pass_rate_percent: float | None
+    if analyzed:
+        pass_rate_percent = round(passed / analyzed * 100.0, 1)
+    else:
+        pass_rate_percent = None
+
+    return {
+        "functions_discovered": discovered,
+        "functions_analyzed": analyzed,
+        "functions_passed": passed,
+        "pass_rate_percent": pass_rate_percent,
+    }
+
+
+def _truncate_cell(text: str, max_width: int) -> str:
+    if max_width <= 0:
+        return ""
+    if len(text) <= max_width:
+        return text
+    if max_width <= 3:
+        return text[:max_width]
+    return f"{text[: max_width - 3]}..."
+
+
+def _display_file_path(file_path: str) -> str:
+    return Path(file_path).name or file_path
+
+
+def _column_widths(rows: list[dict[str, str]], keys: tuple[str, ...]) -> list[int]:
+    widths = [len(header) for header in _TABLE_HEADERS]
+    for row in rows:
+        for index, key in enumerate(keys):
+            widths[index] = max(widths[index], len(row.get(key, "")))
+    return [min(width, cap) for width, cap in zip(widths, (36, 32, 20, 22), strict=True)]
+
+
+def _format_table_row(cells: tuple[str, ...], widths: list[int]) -> str:
+    parts = [
+        _truncate_cell(cell, width).ljust(width)
+        for cell, width in zip(cells, widths, strict=True)
+    ]
+    return "  ".join(parts)
+
+
+def format_result_table(result: dict[str, Any]) -> str:
+    """Return an aligned mutation table with a function-level summary footer."""
+    rows = result.get("table_rows", [])
+    summary = result.get("table_summary") or compute_function_table_summary(result)
+
+    lines: list[str] = []
+    lines.append("Mutation results")
+    lines.append("")
+
+    if rows:
+        display_rows: list[dict[str, str]] = []
+        for row in rows:
+            display_rows.append(
+                {
+                    "file_path": _display_file_path(row["file_path"]),
+                    "function": row["function"],
+                    "mutant": row["mutant"],
+                    "test_result": row["test_result"],
+                }
+            )
+        widths = _column_widths(display_rows, _TABLE_COLUMN_KEYS)
+        separator = "  ".join("-" * width for width in widths)
+
+        lines.append(_format_table_row(_TABLE_HEADERS, widths))
+        lines.append(separator)
+        for row in display_rows:
+            lines.append(
+                _format_table_row(
+                    tuple(row[key] for key in _TABLE_COLUMN_KEYS),
+                    widths,
+                )
+            )
+        lines.append(separator)
+    else:
+        lines.append("(no mutation test rows)")
+        lines.append("-" * 72)
+
+    lines.append("")
+    lines.append("Summary (by function)")
+    lines.append(f"  Discovered          : {summary['functions_discovered']}")
+    lines.append(f"  Analyzed (tested)   : {summary['functions_analyzed']}")
+    lines.append(f"  PASS (PT candidate) : {summary['functions_passed']}")
+    rate = summary.get("pass_rate_percent")
+    if rate is None:
+        lines.append("  Pass rate           : n/a (no functions analyzed)")
+    else:
+        lines.append(f"  Pass rate           : {rate:.1f}%")
+    return "\n".join(lines)
+
+
+def attach_table_summary(result: dict[str, Any]) -> dict[str, Any]:
+    """Add ``table_summary`` for JSON output and CLI formatting."""
+    result["table_summary"] = compute_function_table_summary(result)
+    return result
 
 
 def build_result_table_rows(
@@ -138,20 +267,131 @@ def build_function_analysis_result(
     )
     table_rows = build_result_table_rows(config, mutation_results)
 
-    return {
-        "project_root": str(config.project_root),
-        "file": str(config.relative_file_path),
-        "function": config.function_name,
-        "test_command": config.test_command,
-        "output_path": str(config.output_path),
-        "baseline": _baseline_payload(baseline),
+    return attach_table_summary(
+        {
+            "project_root": str(config.project_root),
+            "file": str(config.relative_file_path),
+            "function": config.function_name,
+            "test_command": config.test_command,
+            "output_path": str(config.output_path),
+            "baseline": _baseline_payload(baseline),
+            "classification": _classification_payload(
+                mutation_results,
+                label=label,
+            ),
+            "mutations": [_mutation_payload(item) for item in mutation_results],
+            "table_rows": table_rows,
+        }
+    )
+
+
+def partial_output_path(output_path: Path) -> Path:
+    """Hidden partial JSON path used during file sweep (best-effort on interrupt)."""
+    return output_path.parent / f".{output_path.name}.pseudoscope-sweep.partial"
+
+
+def build_function_entry(
+    config: PseudoScopeConfig,
+    outcome: FunctionAnalysisOutcome,
+) -> dict[str, Any]:
+    """Build one function entry for file-sweep JSON output."""
+    label = (
+        outcome.classification_override
+        if outcome.classification_override is not None
+        else classify_function(outcome.mutation_results)
+    )
+    entry: dict[str, Any] = {
+        "function": outcome.function_name,
+        "status": outcome.status,
+        "reason": outcome.reason,
+        "start_line": outcome.start_line,
+        "end_line": outcome.end_line,
         "classification": _classification_payload(
-            mutation_results,
+            outcome.mutation_results,
             label=label,
         ),
-        "mutations": [_mutation_payload(item) for item in mutation_results],
-        "table_rows": table_rows,
+        "mutations": [_mutation_payload(item) for item in outcome.mutation_results],
     }
+    if outcome.critical_error:
+        entry["critical_error"] = outcome.critical_error
+    return entry
+
+
+def build_sweep_summary(
+    discovered_count: int,
+    outcomes: list[FunctionAnalysisOutcome],
+) -> dict[str, Any]:
+    """Aggregate counts for a file sweep."""
+    analyzed = [item for item in outcomes if item.status == "analyzed"]
+    skipped = [item for item in outcomes if item.status == "skipped"]
+    labels = [
+        (
+            item.classification_override
+            if item.classification_override is not None
+            else classify_function(item.mutation_results)
+        )
+        for item in analyzed
+    ]
+    return {
+        "discovered": discovered_count,
+        "processed": len(outcomes),
+        "analyzed": len(analyzed),
+        "skipped": len(skipped),
+        "pseudo_tested_candidates": sum(
+            1 for label in labels if label == "pseudo_tested_candidate"
+        ),
+        "not_pseudo_tested": sum(
+            1 for label in labels if label == "not_pseudo_tested"
+        ),
+        "partially_tested": sum(
+            1 for label in labels if label == "partially_tested"
+        ),
+        "inconclusive_timeout": sum(
+            1 for label in labels if label == "inconclusive_timeout"
+        ),
+        "baseline_failed": sum(
+            1 for item in skipped if item.reason == "baseline_failed"
+        ),
+    }
+
+
+def build_file_sweep_result(
+    config: PseudoScopeConfig,
+    source: SourceFile,
+    discovered: list[DiscoveredFunction],
+    baseline: TestRunResult,
+    outcomes: list[FunctionAnalysisOutcome],
+    *,
+    completed: bool,
+) -> dict[str, Any]:
+    """Build JSON-serializable file-sweep results."""
+    function_entries = [
+        build_function_entry(config, outcome) for outcome in outcomes
+    ]
+    all_mutation_results: list[MutationRunResult] = []
+    for outcome in outcomes:
+        all_mutation_results.extend(outcome.mutation_results)
+
+    table_rows = build_result_table_rows(config, all_mutation_results)
+    baseline_ok = not baseline.timed_out and baseline.exit_code == 0
+
+    return attach_table_summary(
+        {
+            "mode": "file_sweep",
+            "completed": completed,
+            "project_root": str(config.project_root),
+            "file": str(config.relative_file_path),
+            "test_command": config.test_command,
+            "output_path": str(config.output_path),
+            "baseline": _baseline_payload(baseline),
+            "baseline_succeeded": baseline_ok,
+            "function_count": len(discovered),
+            "functions_discovered": [item.name for item in discovered],
+            "functions": function_entries,
+            "summary": build_sweep_summary(len(discovered), outcomes),
+            "table_rows": table_rows,
+        }
+    )
 
 
 def write_json_result(result: dict[str, Any], output_path: Path) -> None:

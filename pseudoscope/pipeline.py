@@ -13,7 +13,8 @@ write → run → restore for each mutation.
 Step 8 (implemented): ``results`` — classify the function, write JSON results,
 and build the compact result table.
 
-The CLI orchestrates Steps 1–8 for a single target function.
+The CLI orchestrates Steps 1–8 for a single target function, or a file sweep
+(omit ``--function``) via ``discover`` + ``sweep``.
 """
 
 from __future__ import annotations

@@ -1,2 +1,12 @@
 # PseudoScope run artifacts (sources are restored; backups are local-only)
 **/.pseudoscope/backups/
+**/*.pseudoscope-sweep.partial
+
+.venv/
+benchmark/.venv/
+benchmark/pseudoscope-results.json
+benchmark/pseudoscope-sweep-*.json
+benchmark/.*.pseudoscope-sweep.partial
+benchmark/**/*.egg-info/
+benchmark/build/
+benchmark/dist/

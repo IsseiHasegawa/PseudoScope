@@ -23,7 +23,7 @@ class PseudoScopeConfig:
     project_root: Path
     relative_file_path: Path
     target_file: Path
-    function_name: str
+    function_name: str | None
     test_command: str
     output_path: Path
     timeout_seconds: int
