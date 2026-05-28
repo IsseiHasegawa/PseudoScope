@@ -194,6 +194,60 @@ python3 -m pseudoscope \
 
 ---
 
+## Default-return mutations
+
+PseudoScope **replaces the entire function body** `{ ... }` with one or more minimal `return` statements. The return type is taken from the function signature (text before the name); each **category** gets a fixed set of mutants. Every mutant is tested separately (write → rebuild + test → restore).
+
+Implementation: `pseudoscope/mutate.py` (`_infer_return_type_category`, `_replacement_bodies_for_category`).
+
+### Mutation list by category
+
+| Category | Inferred when return type matches (summary) | # mutants | Replacement bodies (function body becomes) |
+|----------|---------------------------------------------|-----------|-----------------------------------------------|
+| `void` | `void` | **1** | `return;` |
+| `bool` | `bool` | **2** | `return false;` · `return true;` |
+| `integer` | `int`, `short`, `long`, `unsigned …`, `size_t`, `long long`, … | **2** | `return 0;` · `return 1;` |
+| `float` | `float` (not `double`) | **2** | `return 0.0f;` · `return 1.0f;` |
+| `double` | `double` | **2** | `return 0.0;` · `return 1.0;` |
+| `string` | `string` or `std::string` | **2** | `return "";` · `return "A";` |
+| `char` | `char` (after other rules) | **2** | `return '\0';` · `return 'a';` |
+| `pointer` | `*` anywhere in the return type | **1** | `return nullptr;` |
+| `fallback` | STL containers (`std::vector<`, `std::map<`, …) or anything else unmatched | **1** | `return {};` |
+
+### Type inference order
+
+Rules are applied in this order (first match wins):
+
+1. `pointer` — if `*` appears in the return type  
+2. `void`  
+3. `bool`  
+4. `string` — `string` / `std::string`  
+5. `fallback` — `std::vector`, `std::map`, `std::optional`, etc.  
+6. `char`  
+7. `float` — `float` without `double`  
+8. `double`  
+9. `integer` — `int`, `unsigned`, `long`, `size_t`, …  
+10. `fallback` — default  
+
+### Examples
+
+| Signature fragment | Category | Mutants shown in the table |
+|--------------------|----------|----------------------------|
+| `int foo(...)` | `integer` | `return 0;`, `return 1;` |
+| `PyObject *bar(...)` | `pointer` | `return nullptr;` |
+| `void baz(...)` | `void` | `return;` |
+| `std::string qux(...)` | `string` | `return "";`, `return "A";` |
+| `MyStruct fn(...)` | `fallback` | `return {};` |
+
+### Per-function test count
+
+For one function, mutation tests = **(number of mutants for that category)**.  
+File sweep: **sum over all analyzed functions** (plus **one baseline** per file before mutations).
+
+JSON fields: `return_type_category`, `replacement_body`, `mutant` (short label, e.g. `return 0;`).
+
+---
+
 ## Understanding the output
 
 ### Terminal labels (human-facing)
