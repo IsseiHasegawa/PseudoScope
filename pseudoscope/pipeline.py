@@ -3,8 +3,10 @@ Planned analysis pipeline.
 
 Step 1 (implemented): ``cli`` + ``validation`` — parse and validate input.
 Step 2 (implemented): ``source`` — read the target file from disk.
-Step 3 (implemented): ``locate`` — find the function/method body range.
-Step 4 (implemented): ``mutate`` — generate default-return mutations in memory.
+Step 3 (implemented): ``locate`` — find the function body range (Tree-sitter;
+regex fallback for unsupported extensions).
+Step 4 (implemented): ``mutate`` — generate default-return mutations in memory
+(Tree-sitter return type when available).
 Step 5 (implemented): ``workspace`` — write mutated source to disk and restore
 the original (pair write with restore in a ``finally`` block).
 Step 6 (implemented): ``runner`` — run the test command and capture results.

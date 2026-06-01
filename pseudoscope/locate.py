@@ -1,7 +1,8 @@
 """
 Locate function and method bodies in C/C++ source (Step 3).
 
-Finds byte ranges only; does not modify files, run tests, or write JSON.
+Uses Tree-sitter for ``.c`` / ``.cpp`` (and related) sources so body ranges match
+``discover``. Falls back to regex + brace matching for other extensions.
 """
 
 from __future__ import annotations
@@ -11,6 +12,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pseudoscope.source import SourceFile
+from pseudoscope.treesitter_util import (
+    TreeSitterParseError,
+    compound_statement_in_definition,
+    function_names_match,
+    index_to_line,
+    line_start_index,
+    parsed_function_definitions,
+    return_type_spelling_from_definition,
+    supports_treesitter,
+)
 
 
 class FunctionLocateError(Exception):
@@ -31,15 +42,91 @@ class FunctionBodyLocation:
     closing_brace_index: int
     start_line: int
     end_line: int
+    return_type_spelling: str | None = None
 
 
-def _index_to_line(content: str, index: int) -> int:
-    return content.count("\n", 0, index) + 1
+def _location_from_compound_statement(
+    source: SourceFile,
+    function_name: str,
+    *,
+    definition_start_index: int,
+    compound,
+    return_type_spelling: str | None = None,
+) -> FunctionBodyLocation:
+    content = source.content
+    opening_brace_index = compound.start_byte
+    closing_brace_index = compound.end_byte - 1
+
+    if opening_brace_index >= len(content) or content[opening_brace_index] != "{":
+        raise FunctionLocateError(
+            f"Expected '{{' at compound_statement start for '{function_name}' "
+            f"in {source.path}."
+        )
+    if closing_brace_index < 0 or content[closing_brace_index] != "}":
+        raise FunctionLocateError(
+            f"Expected '}}' at compound_statement end for '{function_name}' "
+            f"in {source.path}."
+        )
+
+    body_start_index = opening_brace_index + 1
+    body_end_index = closing_brace_index
+    signature_start_index = line_start_index(content, definition_start_index)
+
+    return FunctionBodyLocation(
+        function_name=function_name,
+        path=source.path,
+        relative_path=source.relative_path,
+        signature_start_index=signature_start_index,
+        opening_brace_index=opening_brace_index,
+        body_start_index=body_start_index,
+        body_end_index=body_end_index,
+        closing_brace_index=closing_brace_index,
+        start_line=index_to_line(content, signature_start_index),
+        end_line=index_to_line(content, closing_brace_index),
+        return_type_spelling=return_type_spelling,
+    )
 
 
-def _line_start_index(content: str, index: int) -> int:
-    previous_newline = content.rfind("\n", 0, index)
-    return 0 if previous_newline < 0 else previous_newline + 1
+def _locate_function_body_treesitter(
+    source: SourceFile,
+    function_name: str,
+) -> FunctionBodyLocation:
+    try:
+        definitions = parsed_function_definitions(source)
+    except TreeSitterParseError as exc:
+        raise FunctionLocateError(str(exc)) from exc
+
+    located: list[FunctionBodyLocation] = []
+    for item in definitions:
+        if not function_names_match(function_name, item.name):
+            continue
+        compound = compound_statement_in_definition(item.node)
+        if compound is None:
+            continue
+        located.append(
+            _location_from_compound_statement(
+                source,
+                function_name,
+                definition_start_index=item.node.start_byte,
+                compound=compound,
+                return_type_spelling=return_type_spelling_from_definition(
+                    item.node,
+                    source.content,
+                ),
+            )
+        )
+
+    if not located:
+        raise FunctionLocateError(
+            f"No function body found for '{function_name}' in {source.path}."
+        )
+    if len(located) > 1:
+        lines = ", ".join(str(item.start_line) for item in located)
+        raise FunctionLocateError(
+            f"Ambiguous function '{function_name}' in {source.path}: "
+            f"{len(located)} definitions found at lines {lines}."
+        )
+    return located[0]
 
 
 def _advance_past_string(content: str, index: int) -> int:
@@ -121,12 +208,6 @@ def _find_matching_delimiter(
 
 
 def _name_with_args_pattern(function_name: str) -> re.Pattern[str]:
-    """
-    Match ``name(`` only at an identifier boundary.
-
-    Avoids false positives such as ``Dict_iterNext`` inside
-    ``SortedDict_iterNext``.
-    """
     escaped = re.escape(function_name)
     boundary = r"(?<![A-Za-z0-9_])"
     if "::" in function_name:
@@ -135,7 +216,6 @@ def _name_with_args_pattern(function_name: str) -> re.Pattern[str]:
 
 
 def _function_name_start(match: re.Match[str], function_name: str) -> int:
-    """Index of the function identifier within a ``name(`` regex match."""
     if "::" in function_name:
         return match.start()
     segment = match.group(0)
@@ -143,7 +223,7 @@ def _function_name_start(match: re.Match[str], function_name: str) -> int:
     return match.start() + segment.index(local_name)
 
 
-def _try_locate_at_name(
+def _try_locate_at_name_regex(
     source: SourceFile,
     function_name: str,
     name_start: int,
@@ -183,12 +263,9 @@ def _try_locate_at_name(
     except FunctionLocateError:
         return None
 
-    # Half-open range: content[body_start_index:body_end_index]
-    # represents everything inside the function braces.
     body_start_index = opening_brace_index + 1
     body_end_index = closing_brace_index
-
-    signature_start_index = _line_start_index(content, name_start)
+    signature_start_index = line_start_index(content, name_start)
 
     return FunctionBodyLocation(
         function_name=function_name,
@@ -199,9 +276,49 @@ def _try_locate_at_name(
         body_start_index=body_start_index,
         body_end_index=body_end_index,
         closing_brace_index=closing_brace_index,
-        start_line=_index_to_line(content, signature_start_index),
-        end_line=_index_to_line(content, closing_brace_index),
+        start_line=index_to_line(content, signature_start_index),
+        end_line=index_to_line(content, closing_brace_index),
     )
+
+
+def _locate_function_body_regex(
+    source: SourceFile,
+    function_name: str,
+) -> FunctionBodyLocation:
+    content = source.content
+    pattern = _name_with_args_pattern(function_name)
+    matches = list(pattern.finditer(content))
+
+    if not matches:
+        raise FunctionLocateError(
+            f"No definition found for function '{function_name}' in {source.path}."
+        )
+
+    located: list[FunctionBodyLocation] = []
+    for match in matches:
+        name_start = _function_name_start(match, function_name)
+        paren_open = content.find("(", name_start)
+        if paren_open < 0:
+            continue
+        location = _try_locate_at_name_regex(
+            source, function_name, name_start, paren_open
+        )
+        if location is not None:
+            located.append(location)
+
+    if not located:
+        raise FunctionLocateError(
+            f"No function body found for '{function_name}' in {source.path} "
+            "(only declarations or non-matching contexts)."
+        )
+    if len(located) > 1:
+        lines = ", ".join(str(item.start_line) for item in located)
+        raise FunctionLocateError(
+            f"Ambiguous function '{function_name}' in {source.path}: "
+            f"{len(located)} definitions found at lines {lines}."
+        )
+
+    return located[0]
 
 
 def locate_function_body(
@@ -211,42 +328,13 @@ def locate_function_body(
     """
     Locate the body of ``function_name`` in ``source.content``.
 
-    Skips forward declarations ending with ``;``. Raises if zero or multiple
-    definitions with bodies are found.
+    Uses Tree-sitter for C/C++-like extensions; otherwise regex + brace matching.
+    Raises if zero or multiple definitions with bodies are found.
     """
     name = function_name.strip()
     if not name:
         raise FunctionLocateError("Function name must not be empty.")
 
-    content = source.content
-    pattern = _name_with_args_pattern(name)
-    matches = list(pattern.finditer(content))
-
-    if not matches:
-        raise FunctionLocateError(
-            f"No definition found for function '{name}' in {source.path}."
-        )
-
-    located: list[FunctionBodyLocation] = []
-    for match in matches:
-        name_start = _function_name_start(match, name)
-        paren_open = content.find("(", name_start)
-        if paren_open < 0:
-            continue
-        location = _try_locate_at_name(source, name, name_start, paren_open)
-        if location is not None:
-            located.append(location)
-
-    if not located:
-        raise FunctionLocateError(
-            f"No function body found for '{name}' in {source.path} "
-            "(only declarations or non-matching contexts)."
-        )
-    if len(located) > 1:
-        lines = ", ".join(str(item.start_line) for item in located)
-        raise FunctionLocateError(
-            f"Ambiguous function '{name}' in {source.path}: "
-            f"{len(located)} definitions found at lines {lines}."
-        )
-
-    return located[0]
+    if supports_treesitter(source.path):
+        return _locate_function_body_treesitter(source, name)
+    return _locate_function_body_regex(source, name)

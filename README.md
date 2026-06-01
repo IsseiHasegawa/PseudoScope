@@ -198,7 +198,7 @@ python3 -m pseudoscope \
 
 PseudoScope **replaces the entire function body** `{ ... }` with one or more minimal `return` statements. The return type is taken from the function signature (text before the name); each **category** gets a fixed set of mutants. Every mutant is tested separately (write → rebuild + test → restore).
 
-Implementation: `pseudoscope/mutate.py` (`_infer_return_type_category`, `_replacement_bodies_for_category`).
+Implementation: `pseudoscope/mutate.py` (`_infer_return_type_category`, `_replacement_bodies_for_category`). For `.c` / `.cpp` sources, the return type is taken from Tree-sitter via `locate` (`return_type_spelling` on `FunctionBodyLocation`); regex on the signature is used only as a fallback.
 
 ### Mutation list by category
 
@@ -275,7 +275,7 @@ JSON fields: `return_type_category`, `replacement_body`, `mutant` (short label, 
 |----------|---------------------|---------|
 | `analyzed` | — | Mutations ran (see `classification`) |
 | `skipped` | `baseline_failed` | File baseline failed; mutations not run |
-| `skipped` | `locate_failed` | Tree-sitter listed the name but regex locate failed |
+| `skipped` | `locate_failed` | Listed in discover but locate could not resolve a unique body |
 | `skipped` | `no_mutations` | Could not generate default-return mutations |
 | `skipped` | `test_error` | Write / test / restore error (non-critical) |
 
@@ -312,7 +312,8 @@ PesudoScope/
 │   ├── cli.py                   # CLI orchestration
 │   ├── validation.py            # Step 1
 │   ├── source.py                # Step 2
-│   ├── locate.py                # Step 3
+│   ├── locate.py                # Step 3 (Tree-sitter body range; regex fallback)
+│   ├── treesitter_util.py       # Shared C/C++ Tree-sitter parsing
 │   ├── mutate.py                # Step 4
 │   ├── workspace.py             # Step 5 (write / restore)
 │   ├── runner.py                # Step 6 (run tests)

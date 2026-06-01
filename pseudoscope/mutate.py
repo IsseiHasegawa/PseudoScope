@@ -2,7 +2,8 @@
 Generate default-return mutations in memory (Step 4).
 
 Replaces the located function body with minimal return statements.
-Does not write files, run tests, or produce JSON.
+Return types come from Tree-sitter when ``FunctionBodyLocation.return_type_spelling``
+is set (via ``locate``); otherwise signature text is parsed with regex.
 """
 
 from __future__ import annotations
@@ -220,6 +221,33 @@ def replacement_return_line(replacement_body: str) -> str:
     return replacement_body.strip()
 
 
+def _resolve_return_type(
+    source: SourceFile,
+    location: FunctionBodyLocation,
+) -> str:
+    if location.return_type_spelling:
+        return_type = _strip_signature_prefixes(
+            _collapse_whitespace(location.return_type_spelling)
+        )
+        if not return_type:
+            raise MutationError(
+                f"Could not infer return type from Tree-sitter for "
+                f"'{location.function_name}' in {source.path}."
+            )
+        return return_type
+
+    signature_text = _extract_signature_text(source, location)
+    return _return_type_from_signature(signature_text, location.function_name)
+
+
+def resolve_return_type_category(
+    source: SourceFile,
+    location: FunctionBodyLocation,
+) -> ReturnTypeCategory:
+    """Resolve the mutation category for a located function (for tests and tooling)."""
+    return _infer_return_type_category(_resolve_return_type(source, location))
+
+
 def generate_default_return_mutations(
     source: SourceFile,
     location: FunctionBodyLocation,
@@ -235,8 +263,7 @@ def generate_default_return_mutations(
     body_end = location.body_end_index
     original_body = source.content[body_start:body_end]
 
-    signature_text = _extract_signature_text(source, location)
-    return_type = _return_type_from_signature(signature_text, location.function_name)
+    return_type = _resolve_return_type(source, location)
     category = _infer_return_type_category(return_type)
     replacements = _replacement_bodies_for_category(category)
 

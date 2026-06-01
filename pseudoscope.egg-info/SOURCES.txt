@@ -14,6 +14,7 @@ pseudoscope/results.py
 pseudoscope/runner.py
 pseudoscope/source.py
 pseudoscope/sweep.py
+pseudoscope/treesitter_util.py
 pseudoscope/validation.py
 pseudoscope/workspace.py
 pseudoscope.egg-info/PKG-INFO
