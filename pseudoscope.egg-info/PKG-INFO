@@ -208,7 +208,7 @@ python3 -m pseudoscope \
 
 PseudoScope **replaces the entire function body** `{ ... }` with one or more minimal `return` statements. The return type is taken from the function signature (text before the name); each **category** gets a fixed set of mutants. Every mutant is tested separately (write → rebuild + test → restore).
 
-Implementation: `pseudoscope/mutate.py` (`_infer_return_type_category`, `_replacement_bodies_for_category`).
+Implementation: `pseudoscope/mutate.py` (`_infer_return_type_category`, `_replacement_bodies_for_category`). For `.c` / `.cpp` sources, the return type is taken from Tree-sitter via `locate` (`return_type_spelling` on `FunctionBodyLocation`); regex on the signature is used only as a fallback.
 
 ### Mutation list by category
 

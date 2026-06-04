@@ -21,9 +21,11 @@ class PseudoScopeConfig:
     """
 
     project_root: Path
-    relative_file_path: Path
-    target_file: Path
+    relative_file_path: Path | None
+    target_file: Path | None
     function_name: str | None
     test_command: str
     output_path: Path
     timeout_seconds: int
+    mode: str | None
+    lang: str | None

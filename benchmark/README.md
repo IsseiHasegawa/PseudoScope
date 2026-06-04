@@ -38,11 +38,11 @@ source .venv/bin/activate
 
 ```bash
 python -m pseudoscope \
-  --project-root benchmark \
+  --project-root-source-dir benchmark \
   --file src/benchmark_ops.c \
   --function bench_add \
   --test-command "source .venv/bin/activate && pip install -e . && pytest" \
-  --output pseudoscope-results.json \
+  --output-file pseudoscope-results.json \
   --timeout 120
 ```
 
@@ -50,10 +50,10 @@ python -m pseudoscope \
 
 ```bash
 python -m pseudoscope \
-  --project-root benchmark \
+  --project-root-source-dir benchmark \
   --file src/benchmark_ops.c \
   --test-command "source .venv/bin/activate && pip install -e . && pytest" \
-  --output pseudoscope-sweep-ops.json \
+  --output-file pseudoscope-sweep-ops.json \
   --timeout 120
 ```
 
@@ -61,14 +61,14 @@ python -m pseudoscope \
 
 ```bash
 python -m pseudoscope \
-  --project-root benchmark \
+  --project-root-source-dir benchmark \
   --file src/benchmark_cpp.cpp \
   --test-command "source .venv/bin/activate && pip install -e . && pytest" \
-  --output pseudoscope-sweep-cpp.json \
+  --output-file pseudoscope-sweep-cpp.json \
   --timeout 120
 ```
 
-`--output` is relative to `--project-root` (`benchmark/`).
+`--output-dir` and `--output-file` are relative to `--project-root-source-dir` (`benchmark/`).
 
 ## Expected summary (file sweep)
 

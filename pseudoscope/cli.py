@@ -48,7 +48,9 @@ from pseudoscope.results import (
 from pseudoscope.sweep import SweepAbortError, run_file_sweep
 from pseudoscope.runner import TestRunError, TestRunResult, run_test_command
 from pseudoscope.source import SourceFile, SourceReadError, read_source_file
-from pseudoscope.validation import build_config
+from pseudoscope.validation import build_config, require_target_file
+
+DEFAULT_TIMEOUT_SECONDS = 60
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,22 +59,82 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pseudoscope",
         description=(
             "PseudoScope detects pseudo-tested code in C/C++ projects. "
-            "Current release: validate input, read source, locate function, "
-            "generate mutations, run tests, and write JSON results. "
-            "Omit --function to analyze every function in the file (file sweep)."
+            "Omit --function to analyze every function in --file (file sweep)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Example:\n"
+            "  python -m pseudoscope \\\n"
+            "    --project-root-source-dir ultrajson \\\n"
+            "    --file src/ujson/python/objToJSON.c \\\n"
+            "    --test-command \"source .venv/bin/activate && pip install -e . && pytest\" \\\n"
+            "    --output-dir . \\\n"
+            "    --output-file results.json\n"
+            "\n"
+            "Optional: --file, --output-file, --timeout (default 60), "
+            "--mode, --lang (stubs for future use)."
         ),
     )
     parser.add_argument(
-        "--project-root",
-        required=True,
-        metavar="PATH",
-        help="Root directory of the target project.",
+        "--file",
+        default=None,
+        metavar="REL_PATH",
+        help=(
+            "Source file under the project root, relative to "
+            "--project-root-source-dir (optional; required to run analysis)."
+        ),
     )
     parser.add_argument(
-        "--file",
+        "--project-root-source-dir",
         required=True,
-        metavar="REL_PATH",
-        help="Source file path relative to --project-root (e.g. src/calculator.cpp).",
+        metavar="PATH",
+        help="Root directory of the target project (source tree and test cwd).",
+    )
+    parser.add_argument(
+        "--test-command",
+        required=True,
+        metavar="CMD",
+        help="Shell command to run tests from the project root.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Directory to save output JSON. Relative paths resolve under "
+            "--project-root-source-dir (default: project root)."
+        ),
+    )
+    parser.add_argument(
+        "--output-file",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Output JSON file name (optional; default: pseudoscope-results.json). "
+            "Used with --output-dir."
+        ),
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            f"Per test-command timeout in seconds "
+            f"(optional; default: {DEFAULT_TIMEOUT_SECONDS})."
+        ),
+    )
+    parser.add_argument(
+        "--mode",
+        default=None,
+        metavar="MODE",
+        help="Analysis mode (stub; reserved for future use).",
+    )
+    parser.add_argument(
+        "--lang",
+        default=None,
+        metavar="LANG",
+        help="Source language hint (stub; reserved for future use).",
     )
     parser.add_argument(
         "--function",
@@ -83,27 +145,6 @@ def build_parser() -> argparse.ArgumentParser:
             "--file are analyzed (file sweep; .c / .cpp only)."
         ),
     )
-    parser.add_argument(
-        "--test-command",
-        required=True,
-        metavar="CMD",
-        help="Shell command to run tests from the project root.",
-    )
-    parser.add_argument(
-        "--output",
-        default="pseudoscope-results.json",
-        metavar="PATH",
-        help=(
-            "JSON output path (default: pseudoscope-results.json)."
-        ),
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=60,
-        metavar="SECONDS",
-        help="Planned test timeout in seconds (default: 60).",
-    )
     return parser
 
 
@@ -112,11 +153,16 @@ def print_config_summary(config: PseudoScopeConfig) -> None:
     print("PseudoScope configuration loaded successfully.")
     print()
     print(f"Project root: {config.project_root}")
-    print(f"Target file: {config.target_file}")
+    if config.target_file is not None:
+        print(f"Target file: {config.target_file}")
     if config.function_name:
         print(f"Function: {config.function_name}")
-    else:
+    elif config.target_file is not None:
         print("Mode: file sweep (all functions in target file)")
+    if config.mode is not None:
+        print(f"CLI mode (stub): {config.mode}")
+    if config.lang is not None:
+        print(f"Language hint (stub): {config.lang}")
     print(f"Test command: {config.test_command}")
     print(f"Output file: {config.output_path}")
     print(f"Timeout: {config.timeout_seconds} seconds")
@@ -236,12 +282,15 @@ def run_step_validate_input(argv: Sequence[str] | None = None) -> PseudoScopeCon
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     return build_config(
-        project_root=args.project_root,
+        project_root_source_dir=args.project_root_source_dir,
         file=args.file,
         function=args.function,
         test_command=args.test_command,
-        output=args.output,
+        output_dir=args.output_dir,
+        output_file=args.output_file,
         timeout=args.timeout,
+        mode=args.mode,
+        lang=args.lang,
     )
 
 
@@ -364,6 +413,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entry point: validate, read, locate, mutate, baseline test; print summaries."""
     try:
         config = run_step_validate_input(argv)
+        require_target_file(config)
     except ConfigError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

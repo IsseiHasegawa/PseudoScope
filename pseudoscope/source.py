@@ -38,6 +38,10 @@ def read_source_file(
 
     Raises :class:`SourceReadError` if the file cannot be read or decoded.
     """
+    if config.target_file is None or config.relative_file_path is None:
+        raise SourceReadError(
+            "Target file is not configured. Set --file before reading source."
+        )
     path = config.target_file
 
     try:

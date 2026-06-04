@@ -35,7 +35,8 @@ def normalize_relative_file_path(file: str) -> Path:
     relative = Path(raw)
     if relative.is_absolute():
         raise ConfigError(
-            "--file must be a path relative to --project-root, not an absolute path."
+            "--file must be a path relative to --project-root-source-dir, "
+            "not an absolute path."
         )
 
     parts = [part for part in relative.parts if part not in (".", "")]
@@ -47,16 +48,59 @@ def normalize_relative_file_path(file: str) -> Path:
     return Path(*parts)
 
 
-def normalize_output_path(output: str, project_root: Path) -> Path:
-    """Resolve ``--output`` relative to the project root when not absolute."""
-    raw = output.strip()
-    if not raw:
-        raise ConfigError("Output path must not be empty.")
+DEFAULT_OUTPUT_FILE = "pseudoscope-results.json"
 
-    path = Path(raw).expanduser()
-    if path.is_absolute():
-        return path.resolve()
-    return (project_root / path).resolve()
+
+def resolve_output_path(
+    *,
+    output_dir: str | None,
+    output_file: str | None,
+    project_root: Path,
+) -> Path:
+    """Join ``--output-dir`` and ``--output-file`` into a single output path."""
+    file_raw = output_file.strip() if output_file else ""
+    file_name = file_raw or DEFAULT_OUTPUT_FILE
+    if not file_name or file_name in (".", ".."):
+        raise ConfigError("--output-file must be a valid file name.")
+
+    if output_dir is None or not output_dir.strip():
+        parent = project_root
+    else:
+        dir_path = Path(output_dir.strip()).expanduser()
+        parent = dir_path.resolve() if dir_path.is_absolute() else (
+            project_root / dir_path
+        ).resolve()
+
+    return (parent / file_name).resolve()
+
+
+def validate_mode(mode: str | None) -> str | None:
+    """Stub: stored in results JSON; not used by the pipeline yet."""
+    if mode is None:
+        return None
+    text = mode.strip()
+    if not text:
+        raise ConfigError("--mode must not be empty when provided.")
+    return text
+
+
+def validate_lang(lang: str | None) -> str | None:
+    """Stub: stored in results JSON; not used by the pipeline yet."""
+    if lang is None:
+        return None
+    text = lang.strip()
+    if not text:
+        raise ConfigError("--lang must not be empty when provided.")
+    return text
+
+
+def require_target_file(config: PseudoScopeConfig) -> None:
+    """Ensure a target source file is set before running analysis."""
+    if config.target_file is None or config.relative_file_path is None:
+        raise ConfigError(
+            "--file is required for analysis in this release. "
+            "Provide a path relative to --project-root-source-dir."
+        )
 
 
 def resolve_target_file(project_root: Path, relative_file_path: Path) -> Path:
@@ -111,31 +155,48 @@ def validate_sweep_file_extension(relative_file_path: Path) -> None:
 
 def build_config(
     *,
-    project_root: str,
-    file: str,
+    project_root_source_dir: str,
+    file: str | None,
     function: str | None,
     test_command: str,
-    output: str,
+    output_dir: str | None,
+    output_file: str | None,
     timeout: int,
+    mode: str | None,
+    lang: str | None,
 ) -> PseudoScopeConfig:
     """
     Normalize and validate all CLI fields into a :class:`PseudoScopeConfig`.
 
     Raises :class:`ConfigError` with a human-readable message on failure.
     """
-    root = validate_project_root(project_root)
-    relative_file_path = normalize_relative_file_path(file)
-    target_file = resolve_target_file(root, relative_file_path)
-    validate_target_file_exists(target_file)
-
-    if function is None or not function.strip():
-        function_name = None
-        validate_sweep_file_extension(relative_file_path)
-    else:
-        function_name = _require_non_empty(function, "Function name")
+    root = validate_project_root(project_root_source_dir)
     command = _require_non_empty(test_command, "Test command")
     timeout_seconds = validate_timeout(timeout)
-    output_path = normalize_output_path(output, root)
+    output_path = resolve_output_path(
+        output_dir=output_dir,
+        output_file=output_file,
+        project_root=root,
+    )
+    mode_value = validate_mode(mode)
+    lang_value = validate_lang(lang)
+
+    if file is None or not file.strip():
+        relative_file_path = None
+        target_file = None
+        if function is not None and function.strip():
+            raise ConfigError("--function requires --file.")
+        function_name = None
+    else:
+        relative_file_path = normalize_relative_file_path(file)
+        target_file = resolve_target_file(root, relative_file_path)
+        validate_target_file_exists(target_file)
+
+        if function is None or not function.strip():
+            function_name = None
+            validate_sweep_file_extension(relative_file_path)
+        else:
+            function_name = _require_non_empty(function, "Function name")
 
     return PseudoScopeConfig(
         project_root=root,
@@ -145,4 +206,6 @@ def build_config(
         test_command=command,
         output_path=output_path,
         timeout_seconds=timeout_seconds,
+        mode=mode_value,
+        lang=lang_value,
     )
