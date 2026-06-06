@@ -12,407 +12,117 @@ Requires-Dist: tree-sitter-cpp>=0.23.0
 
 Research prototype for detecting **pseudo-tested** C/C++ code, inspired by [PSEUDOSWEEP](https://github.com/mdecourse/PSEUDOSWEEP).
 
-**Idea:** replace a function body with minimal default-return statements, **rebuild** the project, and run its test suite. If tests still pass, the function may be **pseudo-tested** (the suite did not detect the mutation).
+Replace a function body with minimal `return` statements → **rebuild** → run tests. If tests still pass, the function may not be adequately tested against that mutation.
 
-This repository contains:
+- `pseudoscope/` — analysis CLI
+- `ultrajson/` — sample target ([UltraJSON](https://github.com/ultrajson/ultrajson))
 
-- **`pseudoscope/`** — the analysis tool (Python CLI, Steps 1–8)
-- **`ultrajson/`** — a bundled study target ([UltraJSON](https://github.com/ultrajson/ultrajson), C extension + pytest)
-
----
-
-## What PseudoScope does (pipeline)
-
-For **one** function in **one** source file, or **all functions** in a file (file sweep):
-
-| Mode | CLI |
-|------|-----|
-| Single function | `--function NAME` |
-| File sweep | omit `--function` (`.c` / `.cpp`; functions listed via Tree-sitter) |
-
-1. Validate CLI input
-2. Read the source file
-3. Locate the function body (`{` … `}`)
-4. Generate default-return mutations in memory
-5. Run a **baseline** test command
-6. For each mutation: **write** mutated source → **run tests** → **restore** original source (`finally`)
-7. Classify the function and write JSON results
-8. Print a compact table in the terminal
-
-The source file on disk is **always restored** after each mutation test.
+Source files are always restored after each mutation test.
 
 ---
 
 ## Requirements
 
-| Component | Version / notes |
-|-----------|-----------------|
-| Python | 3.10+ |
-| PseudoScope deps | `tree-sitter`, `tree-sitter-c`, `tree-sitter-cpp` (see install below) |
-| OS | macOS or Linux recommended (C toolchain for UltraJSON) |
-| UltraJSON target | C/C++ compiler, `pip`, `pytest` |
-| Shell | `--test-command` runs with `shell=True` |
+- Python 3.10+
+- macOS or Linux (C toolchain)
+- Target project: build step + test runner (e.g. `pytest`); `--test-command` runs with `shell=True`
 
 ---
 
-## Quick start (clone → first run)
-
-### 1. Clone the repository
+## Setup
 
 ```bash
 git clone git@github.com:IsseiHasegawa/PesudoScope.git
 cd PesudoScope
-```
+git submodule update --init --recursive   # if ultrajson/ is empty
 
-If `ultrajson/` is empty after clone, initialize the nested repository (when used as a submodule):
-
-```bash
-git submodule update --init --recursive
-```
-
-Confirm the target tree exists:
-
-```bash
-ls ultrajson/src ultrajson/tests
-```
-
-### 2. Prepare UltraJSON (test subject)
-
-PseudoScope runs tests **from `--project-root`**. For UltraJSON, create a venv **inside `ultrajson/`** and verify tests pass:
-
-```bash
+# Target (ultrajson) — ensure all tests pass
 cd ultrajson
-
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-
-pip install -e .
-pytest
-```
-
-You should see all tests pass (379 tests at time of writing). Then return to the repo root:
-
-```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e . && pytest
 cd ..
-```
 
-### 3. Install PseudoScope (from repo root)
-
-```bash
-cd /path/to/PesudoScope
-
-python3 -m venv .venv
-source .venv/bin/activate
-
+# PseudoScope — separate venv at repo root
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-This installs Tree-sitter and the `pseudoscope` package. Use this venv for PseudoScope (not `ultrajson/.venv`).
+**Note:** Run `python -m pseudoscope` from the **repo root** (`PesudoScope/`), not from `ultrajson/`. Deactivate `ultrajson/.venv` before using the PseudoScope venv.
 
-### 4. Run PseudoScope (single function)
+For C extensions, **include a build** in `--test-command` (e.g. `pip install -e . && pytest`). `pytest` alone may load a stale `.so` and produce false PASS results.
 
-Run from **`PesudoScope/`** with the PseudoScope venv active:
+---
 
-**Important:**
+## Usage
 
-- Run `python3 -m pseudoscope` from **`PesudoScope/`** (parent of the `pseudoscope/` package), **not** from inside `pseudoscope/` or `ultrajson/`.
-- Do **not** keep `ultrajson/.venv` active when starting PseudoScope (that Python does not include the tool). Deactivate first: `deactivate`.
+| Option | Required | Default | Description |
+|--------|----------|---------|-------------|
+| `--project-root-source-dir` | yes | — | Project root (cwd for tests) |
+| `--test-command` | yes | — | Shell command to run tests |
+| `--file` | * | — | Path relative to project root (*required to run analysis) |
+| `--function` | no | — | Function name; omit for **file sweep** (`.c` / `.cpp`) |
+| `--output-dir` | no | project root | Directory for JSON output |
+| `--output-file` | no | `pseudoscope-results.json` | Output file name |
+| `--timeout` | no | `60` | Timeout per test run (seconds) |
+| `--mode` / `--lang` | no | — | Reserved (unused) |
 
-UltraJSON is a **C extension**. The test command must **rebuild** after each source mutation. Use a command like:
+Output paths are resolved under `--project-root-source-dir`. Use `--output-file foo.json` → `ultrajson/foo.json`, not `ultrajson/ultrajson/...` in the file name.
 
-```bash
-cd /path/to/PesudoScope
+If the **baseline** test (one run before mutations) does not exit 0, all functions are skipped as `baseline_failed`. Confirm `pytest` passes in the target directory first.
 
-python3 -m pseudoscope \
-  --project-root ultrajson \
-  --file src/ujson/python/objToJSON.c \
-  --function Tuple_iterNext \
-  --test-command "source .venv/bin/activate && pip install -e . && pytest" \
-  --output pseudoscope-results.json \
-  --timeout 120
-```
-
-`--output` paths relative to `--project-root` resolve under `ultrajson/`. Use e.g. `pseudoscope-results.json` — **not** `ultrajson/pseudoscope-results.json` (that becomes `ultrajson/ultrajson/...`).
-
-### 5. File sweep (all functions in one file)
-
-Omit `--function`. PseudoScope discovers functions with Tree-sitter, runs **one baseline**, then for each function: locate → mutate → test → restore.
+### Single function
 
 ```bash
-cd /path/to/PesudoScope
+cd PesudoScope
 source .venv/bin/activate
-deactivate 2>/dev/null || true   # leave ultrajson venv if active
 
 python -m pseudoscope \
-  --project-root ultrajson \
   --file src/ujson/python/objToJSON.c \
+  --project-root-source-dir ultrajson \
   --test-command "source .venv/bin/activate && pip install -e . && pytest" \
-  --output pseudoscope-sweep-objToJSON.json \
+  --function Tuple_iterNext \
+  --output-file pseudoscope-results.json \
   --timeout 120
 ```
 
-**Note:** 34 functions × several mutations × full rebuild can take a long time. Try one function first (`--function Tuple_iterNext`), or use a shorter test subset in `--test-command` while experimenting.
+### File sweep (all functions in one file)
 
-**Output:** One JSON with `"mode": "file_sweep"`, `"functions": [...]`, and `"summary"`. Final JSON is written when the sweep **completes**; a hidden partial file (`.<output>.pseudoscope-sweep.partial`) is updated after each function for best-effort recovery on interrupt.
-
-### 6. Check the results
-
-**Terminal** — end of the run:
-
-- JSON summary (classification, survival rate)
-- Aligned **Mutation results** table, then a **Summary (by function)** footer:
-  - **Analyzed (tested)** — functions that ran mutation tests
-  - **PASS (PT candidate)** — functions where every mutation survived
-  - **Pass rate** — `PASS / Analyzed` as a percentage
-
-**JSON file** — e.g. `ultrajson/pseudoscope-results.json`:
-
-- `baseline`, `classification`, `mutations`, `table_rows`, `table_summary`
-- Internal mutation statuses: `survived`, `killed`, `timeout`
-
----
-
-## CLI reference
-
-Run from **`PesudoScope/`**:
+Omit `--function`. This can take a long time; try a single function first.
 
 ```bash
-python3 -m pseudoscope --help
-```
-
-| Argument | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `--project-root` | yes | — | Project root; `cwd` for `--test-command` |
-| `--file` | yes | — | Source path **relative** to project root |
-| `--function` | no | — | Function name; if omitted, **file sweep** (all functions) |
-| `--test-command` | yes | — | Shell command (should include **build** for C/C++) |
-| `--output` | no | `pseudoscope-results.json` | JSON output (relative → under project root) |
-| `--timeout` | no | `60` | Per-test-command timeout (seconds) |
-
-### Example: minimal dry run (no real pytest)
-
-Only checks Steps 1–4 style flow if you use a no-op test command (not valid for real C analysis):
-
-```bash
-python3 -m pseudoscope \
-  --project-root ultrajson \
+python -m pseudoscope \
   --file src/ujson/python/objToJSON.c \
-  --function Tuple_iterNext \
-  --test-command "true" \
-  --output ultrajson/pseudoscope-results.json
+  --project-root-source-dir ultrajson \
+  --test-command "source .venv/bin/activate && pip install -e . && pytest" \
+  --output-file pseudoscope-sweep-objToJSON.json \
+  --timeout 120
 ```
 
----
-
-## Default-return mutations
-
-PseudoScope **replaces the entire function body** `{ ... }` with one or more minimal `return` statements. The return type is taken from the function signature (text before the name); each **category** gets a fixed set of mutants. Every mutant is tested separately (write → rebuild + test → restore).
-
-Implementation: `pseudoscope/mutate.py` (`_infer_return_type_category`, `_replacement_bodies_for_category`). For `.c` / `.cpp` sources, the return type is taken from Tree-sitter via `locate` (`return_type_spelling` on `FunctionBodyLocation`); regex on the signature is used only as a fallback.
-
-### Mutation list by category
-
-| Category | Inferred when return type matches (summary) | # mutants | Replacement bodies (function body becomes) |
-|----------|---------------------------------------------|-----------|-----------------------------------------------|
-| `void` | `void` | **1** | `return;` |
-| `bool` | `bool` | **2** | `return false;` · `return true;` |
-| `integer` | `int`, `short`, `long`, `unsigned …`, `size_t`, `long long`, … | **2** | `return 0;` · `return 1;` |
-| `float` | `float` (not `double`) | **2** | `return 0.0f;` · `return 1.0f;` |
-| `double` | `double` | **2** | `return 0.0;` · `return 1.0;` |
-| `string` | `string` or `std::string` | **2** | `return "";` · `return "A";` |
-| `char` | `char` (after other rules) | **2** | `return '\0';` · `return 'a';` |
-| `pointer` | `*` anywhere in the return type | **1** | `return nullptr;` |
-| `fallback` | STL containers (`std::vector<`, `std::map<`, …) or anything else unmatched | **1** | `return {};` |
-
-### Type inference order
-
-Rules are applied in this order (first match wins):
-
-1. `pointer` — if `*` appears in the return type  
-2. `void`  
-3. `bool`  
-4. `string` — `string` / `std::string`  
-5. `fallback` — `std::vector`, `std::map`, `std::optional`, etc.  
-6. `char`  
-7. `float` — `float` without `double`  
-8. `double`  
-9. `integer` — `int`, `unsigned`, `long`, `size_t`, …  
-10. `fallback` — default  
-
-### Examples
-
-| Signature fragment | Category | Mutants shown in the table |
-|--------------------|----------|----------------------------|
-| `int foo(...)` | `integer` | `return 0;`, `return 1;` |
-| `PyObject *bar(...)` | `pointer` | `return nullptr;` |
-| `void baz(...)` | `void` | `return;` |
-| `std::string qux(...)` | `string` | `return "";`, `return "A";` |
-| `MyStruct fn(...)` | `fallback` | `return {};` |
-
-### Per-function test count
-
-For one function, mutation tests = **(number of mutants for that category)**.  
-File sweep: **sum over all analyzed functions** (plus **one baseline** per file before mutations).
-
-JSON fields: `return_type_category`, `replacement_body`, `mutant` (short label, e.g. `return 0;`).
-
----
-
-## Understanding the output
-
-### Terminal labels (human-facing)
+### Reading results
 
 | Label | Meaning |
 |-------|---------|
-| `PASS (PT candidate)` | Tests passed after mutation (`exit_code == 0`) |
+| `PASS (PT candidate)` | Tests passed after mutation |
 | `FAIL (detected)` | Tests failed after mutation |
 | `TIMEOUT` | Test command timed out |
 
-### Function classification (JSON `classification.label`)
-
-| Label | Meaning |
-|-------|---------|
-| `pseudo_tested_candidate` | All mutations survived |
-| `not_pseudo_tested` | All mutations killed |
-| `partially_tested` | Mix of survived and killed |
-| `inconclusive_timeout` | At least one mutation timed out |
-| `baseline_failed` | Baseline failed; mutation tests skipped |
-| `not_analyzed` | No mutation results |
-
-### File sweep: per-function `status` / `reason`
-
-| `status` | `reason` (examples) | Meaning |
-|----------|---------------------|---------|
-| `analyzed` | — | Mutations ran (see `classification`) |
-| `skipped` | `baseline_failed` | File baseline failed; mutations not run |
-| `skipped` | `locate_failed` | Listed in discover but locate could not resolve a unique body |
-| `skipped` | `no_mutations` | Could not generate default-return mutations |
-| `skipped` | `test_error` | Write / test / restore error (non-critical) |
-
-If source **restore** fails after a mutation (`CRITICAL` in logs), the sweep **stops** immediately.
-
-### Baseline failure behavior
-
-If the baseline test fails or times out, PseudoScope:
-
-- Prints a **warning** on stderr
-- **Skips** mutation tests
-- Still writes JSON with `classification.label = "baseline_failed"` and empty `mutations` / `table_rows`
-
----
-
-## C/C++ projects: rebuild is mandatory
-
-| What you change | Before `pytest` |
-|-----------------|-----------------|
-| `src/**/*.c`, `src/**/*.cc`, … | **Rebuild** (e.g. `pip install -e .`, `cmake --build`, `make`) |
-| `tests/*.py` only | Usually `pytest` alone is enough |
-
-If `--test-command` is only `pytest`, mutations are written to `.c` files but the **old `.so` is still loaded**, so results look like false **PASS (PT candidate)**. Always include your project’s build step in `--test-command`.
-
----
-
-## Repository layout
-
-```
-PesudoScope/
-├── README.md
-├── pseudoscope/                 # Python package
-│   ├── __main__.py              # python -m pseudoscope
-│   ├── cli.py                   # CLI orchestration
-│   ├── validation.py            # Step 1
-│   ├── source.py                # Step 2
-│   ├── locate.py                # Step 3 (Tree-sitter body range; regex fallback)
-│   ├── treesitter_util.py       # Shared C/C++ Tree-sitter parsing
-│   ├── mutate.py                # Step 4
-│   ├── workspace.py             # Step 5 (write / restore)
-│   ├── runner.py                # Step 6 (run tests)
-│   ├── executor.py              # Step 7 (mutation loop)
-│   ├── results.py               # Step 8 (JSON + table)
-│   ├── discover.py              # Tree-sitter function discovery (file sweep)
-│   ├── analysis.py              # Per-function analysis helper
-│   ├── sweep.py                 # File sweep orchestration
-│   ├── models.py
-│   └── pipeline.py
-├── pyproject.toml               # package + Tree-sitter dependencies
-└── ultrajson/                   # Study target (nested git repo)
-    ├── src/
-    ├── tests/
-    ├── .venv/                   # create locally (not always in git)
-    └── pseudoscope-results.json # example output path
-```
+JSON includes `baseline`, `classification`, `mutations`, `table_rows`. File sweep adds `"mode": "file_sweep"` and `functions[]`.
 
 ---
 
 ## Troubleshooting
 
-### `No module named pseudoscope`
-
-- **Cause:** Running from `ultrajson/` with `ultrajson/.venv` active, or from inside `pseudoscope/` subfolder.
-- **Fix:**
-
-  ```bash
-  cd /path/to/PesudoScope
-  deactivate
-  python3 -m pseudoscope ...
-  ```
-
-### Baseline `Exit code: 127` / `pytest: command not found`
-
-- **Cause:** `pytest` not on `PATH` when PseudoScope runs the command (venv not activated in `--test-command`).
-- **Fix:** Use e.g. `"source .venv/bin/activate && pip install -e . && pytest"`.
-
-### All mutations `PASS` but manual edit + rebuild fails tests
-
-- **Cause:** `--test-command` did not rebuild the C extension.
-- **Fix:** Add `pip install -e .` (or your build) before `pytest` in `--test-command`.
-
-### No table at end of run
-
-- **Cause:** `baseline_failed` or zero mutations → empty `table_rows`.
-- **Fix:** Fix baseline first; check stderr warning.
-
-### `git commit` only shows `ultrajson (modified content)`
-
-- **Cause:** `ultrajson` is a separate git repository inside PesudoScope.
-- **Fix:** Commit inside `ultrajson/` first, then `git add ultrajson` in PesudoScope.
-
----
-
-## Optional: count functions with ctags
-
-Inside `ultrajson/`:
-
-```bash
-find src \( -name "*.c" -o -name "*.cpp" -o -name "*.cc" \) -type f -print0 |
-while IFS= read -r -d '' file; do
-  count=$(ctags -x --kinds-C=f --kinds-C++=f "$file" 2>/dev/null | wc -l | tr -d ' ')
-  printf "%s\t%s\n" "$file" "$count"
-done
-```
-
-Requires [Universal Ctags](https://github.com/universal-ctags/ctags) on `PATH`.
-
----
-
-## Roadmap
-
-| Step | Status | Module |
-|------|--------|--------|
-| Validate CLI input | done | `validation`, `cli` |
-| Read target file | done | `source` |
-| Locate function body | done | `locate` |
-| Generate mutations | done | `mutate` |
-| Write / restore source | done | `workspace` |
-| Run baseline tests | done | `runner` |
-| Mutation test loop | done | `executor` |
-| JSON + classification + table | done | `results` |
-| File sweep (Tree-sitter discover) | done | `discover`, `sweep`, `analysis` |
-| Folder-wide sweep | planned | — |
+| Symptom | Fix |
+|---------|-----|
+| `No module named pseudoscope` | Run from repo root; deactivate `ultrajson` venv |
+| All functions `Skipped (baseline_failed)` | Fix environment so `pytest` exits 0 (Python version, build in command) |
+| All mutations PASS unexpectedly | Add build step to `--test-command` |
+| `pytest: command not found` | `source` the target venv inside `--test-command` |
 
 ---
 
 ## References
 
-- [PSEUDOSWEEP](https://github.com/mdecourse/PSEUDOSWEEP)
-- [UltraJSON](https://github.com/ultrajson/ultrajson)
+- [PSEUDOSWEEP](https://github.com/mdecourse/PSEUDOSWEEP) · [UltraJSON](https://github.com/ultrajson/ultrajson)
+
+Mutation categories and type inference: see `pseudoscope/mutate.py`.
