@@ -80,10 +80,15 @@ python -m pseudoscope \
 Omit `--function`. This can take a long time; try a single function first.
 
 ```bash
+deactivate
+
+cd /Users/issei/Documents/summer-research/PesudoScope
+source .venv/bin/activate
+
 python -m pseudoscope \
   --file src/ujson/python/objToJSON.c \
   --project-root-source-dir ultrajson \
-  --test-command "source .venv/bin/activate && pip install -e . && pytest" \
+  --test-command "source .venv/bin/activate && pip install -e . && python -m pytest" \
   --output-file pseudoscope-sweep-objToJSON.json \
   --timeout 120
 ```
@@ -130,6 +135,163 @@ PseudoScope infers the return type from the function signature (Tree-sitter when
 **Type inference order** (first match wins): pointer → `void` → `bool` → `string` → STL container → `char` → `float` → `double` → integer → `fallback`.
 
 Implementation: `pseudoscope/mutate.py`.
+
+---
+
+## gcov: which tests execute which C lines
+
+PseudoScope JSON `stdout` lists tests that **fail** on a mutant. **gcov** shows which C lines a test **executes**. Use both when mapping tests to functions (e.g. `List_iterNext`, `Tuple_iterNext` in `objToJSON.c`).
+
+| Tool | Answers |
+|------|---------|
+| PseudoScope | Did the test suite detect this mutation? |
+| gcov | Did this test run this C line? |
+
+### Prerequisites
+
+From `ultrajson/` with its venv active:
+
+```bash
+pip install setuptools setuptools-scm pytest
+gcov --version   # macOS: Xcode or Homebrew LLVM
+```
+
+### 1. Build with coverage flags
+
+A normal `pip install -e .` build is **not** instrumented. Rebuild with coverage before running gcov:
+
+```bash
+cd ultrajson
+source .venv/bin/activate
+rm -rf build cov
+
+CFLAGS="--coverage -O0 -g" \
+CXXFLAGS="--coverage -O0 -g" \
+LDFLAGS="--coverage" \
+python setup.py build_ext --inplace
+```
+
+- `-O0` — disable optimization (line-accurate counts)
+- `-g` — debug symbols
+- `--coverage` — emit profiling hooks
+
+This creates `.gcno` files under `build/temp.*/src/ujson/python/` (not next to the `.c` sources).
+
+### 2. Run tests
+
+Use `python -m pytest` so the correct venv is used:
+
+```bash
+# Full suite
+python -m pytest
+
+# Single test
+python -m pytest tests/test_ujson.py::test_encode_list_conversion -q
+python -m pytest 'tests/test_ujson.py::test_dumps[test_input4-[true,false,null]]' -q
+```
+
+Each run writes `.gcda` files into the same `build/temp.*/` directory.
+
+### 3. Generate reports
+
+**All C files** (recommended — uses `ultrajson/scripts/coverage.sh`):
+
+```bash
+./scripts/coverage.sh
+# Output: ultrajson/cov/*.gcov
+```
+
+**One source file**:
+
+```bash
+gcov --color src/ujson/python/objToJSON.c -o build/temp.*/src/ujson/python
+# Output: objToJSON.c.gcov in the current directory
+```
+
+On Linux, `coverage.sh` passes `--relative-only` to gcov; on macOS it passes `--color`.
+
+### 4. Read `.gcov` output
+
+```bash
+grep "List_iterNext" cov/objToJSON.c.gcov
+grep "186:" cov/objToJSON.c.gcov
+```
+
+Each line looks like:
+
+```
+        5:  186:static int List_iterNext(...)
+    #####:  165:static int Tuple_iterNext(...)
+        -:  166:{
+```
+
+| Prefix | Meaning |
+|--------|---------|
+| `N:` | Line executed **N** times |
+| `#####:` | Line **never** executed |
+| `-:` | Non-executable (blank line, declaration, etc.) |
+
+Example mappings for `objToJSON.c`:
+
+| Test | Function | Lines to check |
+|------|----------|----------------|
+| `test_encode_list_conversion` | `List_iterNext` | `477:` (register), `186:` (body) |
+| `test_dumps[test_input4-…]` (tuple) | `Tuple_iterNext` | `489:` (register), `165:` (body) |
+
+### 5. Compare tests in isolation
+
+`.gcda` data **accumulates** across runs. Clear it before each test when comparing coverage:
+
+```bash
+rm -f build/temp.*/src/ujson/python/*.gcda
+python -m pytest tests/test_ujson.py::test_encode_list_conversion -q
+./scripts/coverage.sh
+```
+
+### 6. Test × function matrix (CSV)
+
+`ultrajson/scripts/test_function_matrix.py` runs each pytest test in isolation, collects gcov line hits, and writes a CSV (`1` = executed, `0` = not).
+
+**Prerequisite:** coverage build (step 1) and a PseudoScope sweep JSON with function line ranges (default: `pseudoscope-sweep-objToJSON.json`).
+
+```bash
+cd ultrajson
+source .venv/bin/activate
+
+# Full matrix (380 tests — takes several minutes)
+python scripts/test_function_matrix.py -o test-function-matrix.csv
+
+# Quick preview
+python scripts/test_function_matrix.py --limit 20 -o matrix-sample.csv
+
+# Single test or subset
+python scripts/test_function_matrix.py \
+  --tests tests/test_ujson.py::test_encode_list_conversion \
+  -o one-test.csv
+```
+
+| Option | Description |
+|--------|-------------|
+| `-o`, `--output` | Output CSV path (default: `test-function-matrix.csv`) |
+| `--limit N` | First N collected tests only |
+| `--tests PATH` | pytest path or node id prefix (default: `tests`) |
+| `--sweep-json FILE` | Function line ranges (default: `pseudoscope-sweep-objToJSON.json`) |
+| `--source-file PATH` | C file to analyze (default: `src/ujson/python/objToJSON.c`) |
+
+CSV format: rows = tests, columns = functions, cells = `1` if any line in the function body was executed.
+
+**Note:** If a test body no longer calls ujson (e.g. `pass` only), the matrix correctly shows `0` for all functions.
+
+### gcov troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| All lines show `#####:` / 0% | Extension built without `--coverage` | Re-run `build_ext --inplace` with `CFLAGS`/`LDFLAGS` above; avoid overwriting with plain `pip install -e .` before gcov |
+| gcov cannot find data | Wrong `-o` path | Point `-o` at `build/temp.*/src/ujson/python` |
+| Mixed results from several tests | Stale `.gcda` | `rm -f build/temp.*/src/ujson/python/*.gcda` before each run |
+| gcov broken after PseudoScope | PseudoScope rebuilds without coverage | Re-run the coverage build in step 1 |
+
+After PseudoScope sweeps, rebuild with coverage flags before running gcov again.
 
 ---
 

@@ -121,8 +121,50 @@ JSON includes `baseline`, `classification`, `mutations`, `table_rows`. File swee
 
 ---
 
+## Default return values
+
+PseudoScope infers the return type from the function signature (Tree-sitter when available, otherwise regex) and replaces the body with minimal `return` statements. Categories with two values generate **two mutations** (one per return).
+
+| Category | Matched return types | Replacement body(ies) |
+|----------|----------------------|------------------------|
+| `void` | `void` | `return;` |
+| `bool` | `bool` | `return false;` · `return true;` |
+| `integer` | `int`, `short`, `long`, `unsigned *`, `size_t`, `std::size_t`, … | `return 0;` · `return 1;` |
+| `float` | `float` (not `double`) | `return 0.0f;` · `return 1.0f;` |
+| `double` | `double` | `return 0.0;` · `return 1.0;` |
+| `string` | `string`, `std::string` | `return "";` · `return "A";` |
+| `char` | `char` | `return '\0';` · `return 'a';` |
+| `pointer` | any type containing `*` (e.g. `PyObject *`, `char *`) | `return nullptr;` |
+| `fallback` | STL containers (`std::vector`, `std::map`, …), unrecognized types | `return {};` |
+
+**Type inference order** (first match wins): pointer → `void` → `bool` → `string` → STL container → `char` → `float` → `double` → integer → `fallback`.
+
+Implementation: `pseudoscope/mutate.py`.
+
+---
+
 ## References
 
 - [PSEUDOSWEEP](https://github.com/mdecourse/PSEUDOSWEEP) · [UltraJSON](https://github.com/ultrajson/ultrajson)
 
-Mutation categories and type inference: see `pseudoscope/mutate.py`.
+```
+cd /Users/issei/Documents/summer-research/PesudoScope/ultrajson
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -e .
+pip install pytest
+
+python -m pytest
+```
+
+cd /Users/issei/Documents/summer-research/PesudoScope          
+source .venv/bin/activate
+
+python -m pseudoscope \  
+  --file src/ujson/python/objToJSON.c \
+  --project-root-source-dir ultrajson \
+  --test-command "source .venv/bin/activate && pip install -e . && python -m pytest" \
+  --output-file pseudoscope-sweep-objToJSON.json \
+  --timeout 120 
