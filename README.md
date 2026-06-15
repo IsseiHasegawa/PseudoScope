@@ -297,4 +297,4 @@ After PseudoScope sweeps, rebuild with coverage flags before running gcov again.
 
 ## References
 
-- [PSEUDOSWEEP](https://github.com/mdecourse/PSEUDOSWEEP) · [UltraJSON](https://github.com/ultrajson/ultrajson)
+- [PSEUDOSWEEP](https://github.com/mdecourse/PSEUDOSWEEP) · [UltraJSON](https://github.com/ultrajson/ultrajson)# count-function-call
