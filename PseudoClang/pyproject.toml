@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pseudoclang"
+version = "0.2.0"
+description = "Detect pseudo-tested C/C++ code via default-return mutations"
+requires-python = ">=3.10"
+dependencies = [
+    "tree-sitter>=0.24.0",
+    "tree-sitter-c>=0.23.0",
+    "tree-sitter-cpp>=0.23.0",
+]
+
+[project.scripts]
+pseudoclang = "pseudoclang.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pseudoclang*"]
