@@ -1,3 +1,13 @@
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# macOS
+.DS_Store
+
 # PseudoScope run artifacts (sources are restored; backups are local-only)
 **/.pseudoscope/backups/
 **/*.pseudoscope-sweep.partial

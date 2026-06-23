@@ -298,3 +298,14 @@ After PseudoScope sweeps, rebuild with coverage flags before running gcov again.
 ## References
 
 - [PSEUDOSWEEP](https://github.com/mdecourse/PSEUDOSWEEP) · [UltraJSON](https://github.com/ultrajson/ultrajson)# count-function-call
+
+cd "/Users/issei/Documents/summer-research/PesudoScope"
+source .venv/bin/activate
+pip install -e .
+
+python -m pseudoscope \
+  --file cJSON.c \
+  --project-root-source-dir cJSON \
+  --test-command "cmake --build build --parallel && ctest --test-dir build --output-on-failure" \
+  --output-file pseudoscope-cjson-sweep.json \
+  --timeout 120
