@@ -90,6 +90,7 @@ cd ultrajson
 PYTHONPATH=../pstrace \
 PSTRACE_MODULE=ujson \
 PSTRACE_OUTPUT=pstrace_raw.tsv \
+PSTRACE_TESTS=pstrace_tests.json \
   .venv/bin/python -m pytest tests/ -p pstrace.plugin
 
 PYTHONPATH=../pstrace .venv/bin/python -m pstrace.report \
@@ -101,9 +102,58 @@ PYTHONPATH=../pstrace .venv/bin/python -m pstrace.report \
 | `-p pstrace.plugin` | load the boundary-marking plugin |
 | `PSTRACE_MODULE` | importable module whose `.so` exports `pstrace_set_test` (or `PSTRACE_LIB=<path>`) |
 | `PSTRACE_OUTPUT` | raw TSV path (default `pstrace_raw.tsv`) |
+| `PSTRACE_TESTS` | passing-nodeids sidecar path (default `pstrace_tests.json`) |
 | `--src-root` | keep only functions defined under this tree; `deps`/`double-conversion` subtrees are dropped |
 | `--keep-file BASENAME` | keep an extra source file by basename (repeatable) |
 | `--no-filter` | keep every resolved function (skip the source filter) |
+
+## Coverage map for PseudoClang
+
+The report can also emit a coverage-map JSON (`pstrace-coverage/1`) that answers
+*which tests exercise function `F` in file `P`?* with zero transformation on the
+consumer side. It is keyed by `(project-root-relative source path, bare function
+name)` and lists pytest nodeids:
+
+```bash
+PYTHONPATH=../pstrace .venv/bin/python -m pstrace.report \
+  --raw pstrace_raw.tsv --src-root src/ujson \
+  --project-root . --tests pstrace_tests.json \
+  --coverage-json coverage.json
+```
+
+```json
+{
+  "meta": { "schema": "pstrace-coverage/1", "project_root": "/abs/ultrajson",
+            "image": "ujson.cpython-314-darwin.so", "...": "..." },
+  "coverage": {
+    "src/ujson/python/objToJSON.c": {
+      "Object_beginTypeContext": ["tests/test_ujson.py::test_encode_dict_values"]
+    }
+  },
+  "tests": ["tests/test_ujson.py::test_dumps", "..."]
+}
+```
+
+| Flag | Meaning |
+|---|---|
+| `--coverage-json PATH` | emit the coverage-map JSON (in addition to / instead of `--out`) |
+| `--project-root PATH` | target project root; coverage keys are made relative to it (**required** with `--coverage-json`) |
+| `--tests PATH` | passing-nodeids sidecar from the plugin (default `pstrace_tests.json`) |
+
+Semantics the consumer relies on:
+
+- **File keys are project-root-relative POSIX paths**, never basenames, so two
+  files with the same basename stay distinct.
+- **Function keys are bare identifiers.** A demangled C++ name `ns::C::m(int)`
+  reduces to `m`; overload collisions are accepted.
+- **Only passing tests appear.** Failed/errored/skipped tests are dropped (a
+  mutant judged against an already-failing test is meaningless). Without the
+  `--tests` sidecar this filter is disabled and a warning is printed.
+- **`(startup)` is preserved** inside coverage lists (import-time calls) but
+  never appears in the top-level `tests` array; a function whose list is exactly
+  `["(startup)"]` is startup-only.
+- **Output is deterministic** (sorted keys and lists, `indent=2`). Set
+  `SOURCE_DATE_EPOCH` to also pin `meta.created_at` for byte-identical diffs.
 
 ## Limitations
 

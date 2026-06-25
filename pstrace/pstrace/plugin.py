@@ -15,18 +15,26 @@ safe to load against a normal (non-instrumented) build.
 
 Output goes to ``$PSTRACE_OUTPUT`` (default ``pstrace_raw.tsv``), written when
 the session finishes (and again at process exit; the second write is a no-op).
+
+Alongside the raw trace, the plugin records which tests *passed* and writes them
+as a JSON array to ``$PSTRACE_TESTS`` (default ``pstrace_tests.json``). The
+offline report uses this sidecar to drop tests that failed/errored/were skipped
+from the coverage map: a mutant judged against an already-failing test is
+meaningless, so only passing tests belong in the selection universe.
 """
 
 from __future__ import annotations
 
 import ctypes
 import importlib
+import json
 import os
 
 import pytest
 
 _set_test = None  # ctypes function or None when disabled
 _dump = None
+_passing: set[str] = set()  # nodeids whose call phase passed
 
 
 def _resolve():
@@ -86,8 +94,29 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem):
     yield
 
 
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Record a nodeid as passing iff its call phase passed.
+
+    A test that errors in setup, fails, or is skipped never reaches a passing
+    call phase, so it is excluded from the passing set (and thus from the
+    coverage map's selection universe).
+    """
+    if report.when == "call" and report.passed:
+        _passing.add(report.nodeid)
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus) -> None:
     if _set_test is not None:
         _set_test(b"")  # detach: later interpreter-shutdown calls are not a test
     if _dump is not None:
         _dump()
+
+    # Write the passing-test sidecar. A failure here must never break the
+    # session, so swallow any error.
+    tests_path = os.environ.get("PSTRACE_TESTS", "pstrace_tests.json")
+    try:
+        with open(tests_path, "w", encoding="utf-8") as fh:
+            json.dump(sorted(_passing), fh, indent=2)
+            fh.write("\n")
+    except Exception:  # noqa: BLE001 - sidecar write is best-effort
+        pass
