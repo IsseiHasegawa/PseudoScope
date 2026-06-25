@@ -153,6 +153,51 @@ def validate_sweep_file_extension(relative_file_path: Path) -> None:
         )
 
 
+def resolve_coverage_map_path(
+    coverage_map: str | None,
+    *,
+    project_root: Path,
+) -> Path | None:
+    """Resolve ``--coverage-map`` to an absolute path (relative to the root)."""
+    if coverage_map is None or not coverage_map.strip():
+        return None
+    raw = Path(coverage_map.strip()).expanduser()
+    resolved = raw if raw.is_absolute() else (project_root / raw)
+    return resolved.resolve()
+
+
+def validate_selection_options(
+    *,
+    coverage_map_path: Path | None,
+    assume_coverage_complete: bool,
+    test_runner_template: str | None,
+) -> str | None:
+    """
+    Validate the test-selection flags and return the normalized template.
+
+    - ``--assume-coverage-complete`` requires ``--coverage-map`` (nothing to be
+      complete about otherwise).
+    - ``--test-runner-template``, when given, must contain the ``{selection}``
+      placeholder so selected nodeids actually reach the runner.
+    """
+    if assume_coverage_complete and coverage_map_path is None:
+        raise ConfigError(
+            "--assume-coverage-complete requires --coverage-map."
+        )
+
+    if test_runner_template is None:
+        return None
+    template = test_runner_template.strip()
+    if not template:
+        raise ConfigError("--test-runner-template must not be empty when provided.")
+    if "{selection}" not in template:
+        raise ConfigError(
+            "--test-runner-template must contain the '{selection}' placeholder "
+            "where selected test nodeids are inserted."
+        )
+    return template
+
+
 def build_config(
     *,
     project_root_source_dir: str,
@@ -164,6 +209,9 @@ def build_config(
     timeout: int,
     mode: str | None,
     lang: str | None,
+    coverage_map: str | None = None,
+    assume_coverage_complete: bool = False,
+    test_runner_template: str | None = None,
 ) -> PseudoScopeConfig:
     """
     Normalize and validate all CLI fields into a :class:`PseudoScopeConfig`.
@@ -180,6 +228,13 @@ def build_config(
     )
     mode_value = validate_mode(mode)
     lang_value = validate_lang(lang)
+
+    coverage_map_path = resolve_coverage_map_path(coverage_map, project_root=root)
+    template_value = validate_selection_options(
+        coverage_map_path=coverage_map_path,
+        assume_coverage_complete=assume_coverage_complete,
+        test_runner_template=test_runner_template,
+    )
 
     if file is None or not file.strip():
         relative_file_path = None
@@ -208,4 +263,7 @@ def build_config(
         timeout_seconds=timeout_seconds,
         mode=mode_value,
         lang=lang_value,
+        coverage_map_path=coverage_map_path,
+        assume_coverage_complete=assume_coverage_complete,
+        test_runner_template=template_value,
     )

@@ -7,11 +7,14 @@ source files, classify pseudo-tested functions, or write JSON.
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
 
 from pseudoclang.models import PseudoScopeConfig
+
+SELECTION_PLACEHOLDER = "{selection}"
 
 
 class TestRunError(Exception):
@@ -39,17 +42,17 @@ def _decode_output(value: str | bytes | None) -> str:
     return value
 
 
-def run_test_command(config: PseudoScopeConfig) -> TestRunResult:
+def _run_shell_command(command: str, config: PseudoScopeConfig) -> TestRunResult:
     """
-    Run ``config.test_command`` from ``config.project_root``.
+    Run ``command`` from ``config.project_root`` with the shared handling.
 
-    Returns a :class:`TestRunResult` on completion or timeout. Raises
-    :class:`TestRunError` if the process cannot be started.
+    Identical subprocess/exit-code/timeout/cwd behavior for both the full test
+    command and a selected-subset command.
     """
     start = time.perf_counter()
     try:
         completed = subprocess.run(
-            config.test_command,
+            command,
             cwd=config.project_root,
             shell=True,
             capture_output=True,
@@ -61,7 +64,7 @@ def run_test_command(config: PseudoScopeConfig) -> TestRunResult:
     except subprocess.TimeoutExpired as exc:
         runtime_seconds = time.perf_counter() - start
         return TestRunResult(
-            test_command=config.test_command,
+            test_command=command,
             project_root=str(config.project_root),
             exit_code=None,
             stdout=_decode_output(exc.stdout),
@@ -71,13 +74,13 @@ def run_test_command(config: PseudoScopeConfig) -> TestRunResult:
         )
     except OSError as exc:
         raise TestRunError(
-            f"Failed to start test command {config.test_command!r} "
+            f"Failed to start test command {command!r} "
             f"in {config.project_root}: {exc}"
         ) from exc
 
     runtime_seconds = time.perf_counter() - start
     return TestRunResult(
-        test_command=config.test_command,
+        test_command=command,
         project_root=str(config.project_root),
         exit_code=completed.returncode,
         stdout=completed.stdout or "",
@@ -85,3 +88,42 @@ def run_test_command(config: PseudoScopeConfig) -> TestRunResult:
         runtime_seconds=runtime_seconds,
         timed_out=False,
     )
+
+
+def run_test_command(config: PseudoScopeConfig) -> TestRunResult:
+    """
+    Run ``config.test_command`` from ``config.project_root``.
+
+    Returns a :class:`TestRunResult` on completion or timeout. Raises
+    :class:`TestRunError` if the process cannot be started.
+    """
+    return _run_shell_command(config.test_command, config)
+
+
+def build_selected_command(template: str, nodeids: tuple[str, ...] | list[str]) -> str:
+    """
+    Substitute shell-quoted ``nodeids`` into ``template``'s ``{selection}``.
+
+    Each nodeid is quoted independently because parametrized pytest nodeids
+    legitimately contain spaces, ``::``, brackets, commas, and quotes.
+    """
+    selection = " ".join(shlex.quote(nodeid) for nodeid in nodeids)
+    return template.replace(SELECTION_PLACEHOLDER, selection)
+
+
+def run_selected_test_command(
+    config: PseudoScopeConfig,
+    nodeids: tuple[str, ...] | list[str],
+) -> TestRunResult:
+    """
+    Run only ``nodeids`` via ``config.test_runner_template``.
+
+    The template must contain ``{selection}`` and is validated at config time.
+    Raises :class:`TestRunError` if no template is configured.
+    """
+    if not config.test_runner_template:
+        raise TestRunError(
+            "Selected test run requested but no --test-runner-template is set."
+        )
+    command = build_selected_command(config.test_runner_template, nodeids)
+    return _run_shell_command(command, config)

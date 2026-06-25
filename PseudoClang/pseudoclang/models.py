@@ -29,3 +29,8 @@ class PseudoScopeConfig:
     timeout_seconds: int
     mode: str | None
     lang: str | None
+    # Optional pstrace-driven test selection. Defaults keep behavior identical
+    # to a run with no coverage map.
+    coverage_map_path: Path | None = None
+    assume_coverage_complete: bool = False
+    test_runner_template: str | None = None

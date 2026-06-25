@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from pseudoclang.analysis import FunctionAnalysisOutcome, analyze_function
+from pseudoclang.coverage_map import CoverageMap
 from pseudoclang.discover import DiscoverError, DiscoveredFunction, discover_functions
 from pseudoclang.models import PseudoScopeConfig
 from pseudoclang.results import (
@@ -38,15 +39,29 @@ def run_file_sweep(
     source: SourceFile,
     *,
     discovered: list[DiscoveredFunction] | None = None,
+    coverage_map: CoverageMap | None = None,
 ) -> dict[str, Any]:
     """
     Run baseline once, then analyze each discovered function.
 
     Returns the final JSON-serializable result dict. Writes ``config.output_path``
     only on successful completion. Updates a partial JSON file after each function.
+
+    When ``coverage_map`` is provided, each function is tested via its
+    coverage-driven plan; otherwise behavior is unchanged (full suite per mutant).
     """
     if discovered is None:
         discovered = discover_functions(source)
+
+    if coverage_map is not None and not coverage_map.has_file(
+        config.relative_file_path
+    ):
+        print(
+            f"Warning: coverage map has no data for {config.relative_file_path}; "
+            "every function will fall back to the full --test-command. The file "
+            "may not have been built with instrumentation or exercised by tests.",
+            file=sys.stderr,
+        )
 
     partial_path = partial_output_path(config.output_path)
     interrupted = False
@@ -77,6 +92,18 @@ def run_file_sweep(
             )
 
         outcomes: list[FunctionAnalysisOutcome] = []
+
+        def _build_result(*, completed: bool) -> dict[str, Any]:
+            return build_file_sweep_result(
+                config,
+                source,
+                discovered,
+                baseline,
+                outcomes,
+                completed=completed,
+                coverage_map=coverage_map,
+            )
+
         for index, item in enumerate(discovered, start=1):
             if interrupted:
                 break
@@ -89,55 +116,28 @@ def run_file_sweep(
                 source,
                 item.name,
                 run_mutations=run_mutations,
+                coverage_map=coverage_map,
             )
             outcomes.append(outcome)
 
             if outcome.critical_error:
                 print(f"Error: {outcome.critical_error}", file=sys.stderr)
-                partial = build_file_sweep_result(
-                    config,
-                    source,
-                    discovered,
-                    baseline,
-                    outcomes,
-                    completed=False,
-                )
+                partial = _build_result(completed=False)
                 write_json_result(partial, partial_path)
                 raise SweepAbortError(outcome.critical_error)
 
             _print_function_outcome(outcome)
 
-            partial = build_file_sweep_result(
-                config,
-                source,
-                discovered,
-                baseline,
-                outcomes,
-                completed=False,
-            )
+            partial = _build_result(completed=False)
             write_json_result(partial, partial_path)
 
         if interrupted:
-            partial = build_file_sweep_result(
-                config,
-                source,
-                discovered,
-                baseline,
-                outcomes,
-                completed=False,
-            )
+            partial = _build_result(completed=False)
             write_json_result(partial, partial_path)
             _try_promote_partial(partial_path, config.output_path)
             return partial
 
-        result = build_file_sweep_result(
-            config,
-            source,
-            discovered,
-            baseline,
-            outcomes,
-            completed=True,
-        )
+        result = _build_result(completed=True)
         write_json_result(result, config.output_path)
         if partial_path.exists():
             partial_path.unlink()

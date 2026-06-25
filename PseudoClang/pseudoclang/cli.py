@@ -31,10 +31,18 @@ from pseudoclang.mutate import (
     generate_default_return_mutations,
     replacement_return_line,
 )
+from pseudoclang.analysis import execute_plan, resolve_execution_plan
+from pseudoclang.coverage_map import (
+    CoverageMap,
+    CoverageMapError,
+    ExecutionPlan,
+    PlanKind,
+    load_coverage_map,
+    verify_project_root,
+)
 from pseudoclang.executor import (
     MutationExecutionError,
     MutationRunResult,
-    run_mutation_tests,
 )
 from pseudoclang.models import ConfigError, PseudoScopeConfig
 from pseudoclang.discover import DiscoverError, discover_functions
@@ -145,6 +153,35 @@ def build_parser() -> argparse.ArgumentParser:
             "--file are analyzed (file sweep; .c / .cpp only)."
         ),
     )
+    parser.add_argument(
+        "--coverage-map",
+        default=None,
+        metavar="PATH",
+        help=(
+            "pstrace coverage-map JSON (pstrace-coverage/1). When given, each "
+            "function's mutants run only the tests that exercise it, falling "
+            "back to --test-command when the map cannot answer."
+        ),
+    )
+    parser.add_argument(
+        "--assume-coverage-complete",
+        action="store_true",
+        help=(
+            "Treat a function absent from the map as exercised by no test: mark "
+            "it survived without running anything (fast, less safe; requires "
+            "--coverage-map). Default: fall back to the full --test-command."
+        ),
+    )
+    parser.add_argument(
+        "--test-runner-template",
+        default=None,
+        metavar="CMD",
+        help=(
+            "Command template used to run a selected subset of tests; must "
+            "contain '{selection}', e.g. \"pip install -e . -q && pytest "
+            "{selection}\". Without it, selection degrades to full runs."
+        ),
+    )
     return parser
 
 
@@ -166,6 +203,11 @@ def print_config_summary(config: PseudoScopeConfig) -> None:
     print(f"Test command: {config.test_command}")
     print(f"Output file: {config.output_path}")
     print(f"Timeout: {config.timeout_seconds} seconds")
+    if config.coverage_map_path is not None:
+        print(f"Coverage map: {config.coverage_map_path}")
+        print(f"Assume coverage complete: {config.assume_coverage_complete}")
+        if config.test_runner_template is not None:
+            print(f"Test runner template: {config.test_runner_template}")
 
 
 def print_source_summary(source: SourceFile) -> None:
@@ -237,10 +279,30 @@ def print_json_result_summary(result: dict[str, Any]) -> None:
         rate = table_summary.get("pass_rate_percent")
         if rate is not None:
             print(f"Pass rate: {rate:.1f}%")
+        _print_selection_summary(result.get("selection"))
         return
     classification = result["classification"]
     print(f"Function classification: {classification['label']}")
     print(f"Survival rate: {classification['survival_rate']:.2f}")
+
+
+def _print_selection_summary(selection: dict[str, Any] | None) -> None:
+    """Print coverage-map provenance counts and the test-execution savings."""
+    if not selection:
+        return
+    print()
+    print("Test selection (coverage map)")
+    judgments = selection.get("judgments", {})
+    for judgment in sorted(judgments):
+        print(f"  {judgment}: {judgments[judgment]}")
+    with_map = selection.get("tests_executed_estimate")
+    without_map = selection.get("tests_executed_estimate_without_map")
+    saved = selection.get("estimated_tests_saved")
+    if with_map is not None and without_map is not None:
+        print(
+            f"  Estimated test runs: {with_map} with map "
+            f"vs {without_map} without (saved {saved})"
+        )
 
 
 def print_result_table(result: dict[str, Any]) -> None:
@@ -291,6 +353,9 @@ def run_step_validate_input(argv: Sequence[str] | None = None) -> PseudoScopeCon
         timeout=args.timeout,
         mode=args.mode,
         lang=args.lang,
+        coverage_map=args.coverage_map,
+        assume_coverage_complete=args.assume_coverage_complete,
+        test_runner_template=args.test_runner_template,
     )
 
 
@@ -334,13 +399,17 @@ def run_step_generate_mutations(
 def run_step_run_mutation_tests(
     config: PseudoScopeConfig,
     mutations: list[MutatedSource],
+    *,
+    execution_plan: ExecutionPlan,
 ) -> list[MutationRunResult]:
     """
     Step 7: run each mutation test (write → test → restore).
 
-    Raises :class:`MutationExecutionError` on failure.
+    ``execution_plan`` selects the test scope (a coverage-driven subset, the
+    full suite, or skip-as-survived). Raises :class:`MutationExecutionError` on
+    failure.
     """
-    return run_mutation_tests(config, mutations)
+    return execute_plan(config, mutations, execution_plan)
 
 
 def run_step_write_results(
@@ -349,6 +418,8 @@ def run_step_write_results(
     mutation_results: list[MutationRunResult],
     *,
     classification_override: str | None = None,
+    judgment: str | None = None,
+    selected_tests: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """
     Step 8: build the analysis result and write JSON to ``config.output_path``.
@@ -360,6 +431,8 @@ def run_step_write_results(
         baseline,
         mutation_results,
         classification_override=classification_override,
+        judgment=judgment,
+        selected_tests=selected_tests,
     )
     write_json_result(result, config.output_path)
     return result
@@ -374,7 +447,37 @@ def run_step_run_baseline_test(config: PseudoScopeConfig) -> TestRunResult:
     return run_test_command(config)
 
 
-def run_file_sweep_mode(config: PseudoScopeConfig) -> int:
+def load_coverage_map_for_run(config: PseudoScopeConfig) -> CoverageMap | None:
+    """
+    Load and validate the coverage map (if any) and run staleness checks.
+
+    Returns the map, or ``None`` when no ``--coverage-map`` was given. Raises
+    :class:`CoverageMapError` on a bad map or a project-root mismatch.
+    """
+    coverage_map = load_coverage_map(config.coverage_map_path)
+    if coverage_map is None:
+        return None
+
+    verify_project_root(coverage_map, config.project_root)
+
+    print()
+    print(f"Coverage map loaded: {config.coverage_map_path}")
+    print(f"  schema: pstrace-coverage/1, tests universe: {len(coverage_map.universe())}")
+    if config.test_runner_template is None:
+        print(
+            "Warning: --coverage-map provided without --test-runner-template; "
+            "test selection is disabled and the full --test-command will run "
+            "per mutant (absent functions may still be skipped with "
+            "--assume-coverage-complete).",
+            file=sys.stderr,
+        )
+    return coverage_map
+
+
+def run_file_sweep_mode(
+    config: PseudoScopeConfig,
+    coverage_map: CoverageMap | None = None,
+) -> int:
     """File sweep: discover all functions, baseline once, analyze each."""
     try:
         source = run_step_read_source(config)
@@ -396,7 +499,9 @@ def run_file_sweep_mode(config: PseudoScopeConfig) -> int:
         print(f"  - {item.name} (line {item.start_line})")
 
     try:
-        result = run_file_sweep(config, source, discovered=discovered)
+        result = run_file_sweep(
+            config, source, discovered=discovered, coverage_map=coverage_map
+        )
     except SweepAbortError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -420,8 +525,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print_config_summary(config)
 
+    try:
+        coverage_map = load_coverage_map_for_run(config)
+    except CoverageMapError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
     if config.function_name is None:
-        return run_file_sweep_mode(config)
+        return run_file_sweep_mode(config, coverage_map)
 
     try:
         source = run_step_read_source(config)
@@ -457,10 +568,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     mutation_results: list[MutationRunResult] = []
     classification_override: str | None = None
+    plan: ExecutionPlan | None = None
 
     if baseline_test_succeeded(baseline):
+        plan = resolve_execution_plan(config, coverage_map, config.function_name)
         try:
-            mutation_results = run_step_run_mutation_tests(config, mutations)
+            mutation_results = run_step_run_mutation_tests(
+                config, mutations, execution_plan=plan
+            )
         except MutationExecutionError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
@@ -473,12 +588,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
 
+    selected_tests = (
+        plan.nodeids
+        if plan is not None and plan.kind is PlanKind.RUN_SELECTED
+        else None
+    )
     try:
         analysis = run_step_write_results(
             config,
             baseline,
             mutation_results,
             classification_override=classification_override,
+            judgment=plan.judgment if plan is not None else None,
+            selected_tests=selected_tests,
         )
     except ResultWriteError as exc:
         print(f"Error: {exc}", file=sys.stderr)

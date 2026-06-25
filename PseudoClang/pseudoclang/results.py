@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from pseudoclang.analysis import FunctionAnalysisOutcome
+from pseudoclang.coverage_map import (
+    JUDGMENT_SELECTED,
+    JUDGMENT_SKIPPED_UNCOVERED,
+    CoverageMap,
+)
 from pseudoclang.discover import DiscoveredFunction
 from pseudoclang.executor import MutationRunResult
 from pseudoclang.models import PseudoScopeConfig
@@ -231,6 +236,68 @@ def _mutation_payload(result: MutationRunResult) -> dict[str, Any]:
     }
 
 
+def _selection_payload(
+    judgment: str | None,
+    selected_tests: tuple[str, ...] | None,
+    mutation_results: list[MutationRunResult],
+) -> dict[str, Any]:
+    """How a function's mutants were judged via the coverage map (provenance).
+
+    ``mutation_runs`` is the number of mutant test invocations actually
+    executed: zero for a skip-as-survived verdict (no test ran), otherwise one
+    per mutant.
+    """
+    skipped = judgment == JUDGMENT_SKIPPED_UNCOVERED
+    return {
+        "judgment": judgment,
+        "selected_test_count": len(selected_tests) if selected_tests else None,
+        "selected_tests": list(selected_tests) if selected_tests else None,
+        "mutation_runs": 0 if skipped else len(mutation_results),
+    }
+
+
+def build_selection_summary(
+    outcomes: list[FunctionAnalysisOutcome],
+    universe_size: int,
+) -> dict[str, Any]:
+    """
+    Aggregate coverage-map provenance and the test-execution savings.
+
+    ``tests_executed_estimate`` counts mutant-test invocations using each
+    function's selected nodeid count (selected), the suite size (full fallback),
+    or zero (skipped). ``..._without_map`` is the same workload run as the full
+    suite for every mutant. The difference shows where selection helped. The
+    suite size is approximated by the map's passing-tests universe.
+    """
+    judgments: dict[str, int] = {}
+    selected_invocations = 0
+    with_map = 0
+    without_map = 0
+    for outcome in outcomes:
+        if outcome.judgment is None:
+            continue
+        judgments[outcome.judgment] = judgments.get(outcome.judgment, 0) + 1
+        mutants = len(outcome.mutation_results)
+        without_map += mutants * universe_size
+        if outcome.judgment == JUDGMENT_SELECTED and outcome.selected_tests:
+            invocations = mutants * len(outcome.selected_tests)
+            selected_invocations += invocations
+            with_map += invocations
+        elif outcome.judgment == JUDGMENT_SKIPPED_UNCOVERED:
+            pass  # nothing executed
+        else:
+            with_map += mutants * universe_size
+
+    return {
+        "universe_size": universe_size,
+        "judgments": judgments,
+        "selected_test_invocations": selected_invocations,
+        "tests_executed_estimate": with_map,
+        "tests_executed_estimate_without_map": without_map,
+        "estimated_tests_saved": without_map - with_map,
+    }
+
+
 def _classification_payload(
     mutation_results: list[MutationRunResult],
     *,
@@ -258,6 +325,8 @@ def build_function_analysis_result(
     mutation_results: list[MutationRunResult],
     *,
     classification_override: str | None = None,
+    judgment: str | None = None,
+    selected_tests: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Build a JSON-serializable analysis result for one function."""
     label = (
@@ -267,24 +336,28 @@ def build_function_analysis_result(
     )
     table_rows = build_result_table_rows(config, mutation_results)
 
-    return attach_table_summary(
-        {
-            "project_root": str(config.project_root),
-            "file": str(config.relative_file_path),
-            "function": config.function_name,
-            "cli_mode": config.mode,
-            "lang": config.lang,
-            "test_command": config.test_command,
-            "output_path": str(config.output_path),
-            "baseline": _baseline_payload(baseline),
-            "classification": _classification_payload(
-                mutation_results,
-                label=label,
-            ),
-            "mutations": [_mutation_payload(item) for item in mutation_results],
-            "table_rows": table_rows,
-        }
-    )
+    result: dict[str, Any] = {
+        "project_root": str(config.project_root),
+        "file": str(config.relative_file_path),
+        "function": config.function_name,
+        "cli_mode": config.mode,
+        "lang": config.lang,
+        "test_command": config.test_command,
+        "output_path": str(config.output_path),
+        "baseline": _baseline_payload(baseline),
+        "classification": _classification_payload(
+            mutation_results,
+            label=label,
+        ),
+        "mutations": [_mutation_payload(item) for item in mutation_results],
+        "table_rows": table_rows,
+    }
+    # Only surface provenance when a map was used (byte-identical output without).
+    if config.coverage_map_path is not None:
+        result["selection"] = _selection_payload(
+            judgment, selected_tests, mutation_results
+        )
+    return attach_table_summary(result)
 
 
 def partial_output_path(output_path: Path) -> Path:
@@ -314,6 +387,12 @@ def build_function_entry(
         ),
         "mutations": [_mutation_payload(item) for item in outcome.mutation_results],
     }
+    # Only surface coverage-driven provenance when a map was actually used, so a
+    # run without --coverage-map produces byte-identical output to before.
+    if config.coverage_map_path is not None:
+        entry["selection"] = _selection_payload(
+            outcome.judgment, outcome.selected_tests, outcome.mutation_results
+        )
     if outcome.critical_error:
         entry["critical_error"] = outcome.critical_error
     return entry
@@ -365,6 +444,7 @@ def build_file_sweep_result(
     outcomes: list[FunctionAnalysisOutcome],
     *,
     completed: bool,
+    coverage_map: CoverageMap | None = None,
 ) -> dict[str, Any]:
     """Build JSON-serializable file-sweep results."""
     function_entries = [
@@ -377,25 +457,31 @@ def build_file_sweep_result(
     table_rows = build_result_table_rows(config, all_mutation_results)
     baseline_ok = not baseline.timed_out and baseline.exit_code == 0
 
-    return attach_table_summary(
-        {
-            "mode": "file_sweep",
-            "completed": completed,
-            "project_root": str(config.project_root),
-            "file": str(config.relative_file_path),
-            "cli_mode": config.mode,
-            "lang": config.lang,
-            "test_command": config.test_command,
-            "output_path": str(config.output_path),
-            "baseline": _baseline_payload(baseline),
-            "baseline_succeeded": baseline_ok,
-            "function_count": len(discovered),
-            "functions_discovered": [item.name for item in discovered],
-            "functions": function_entries,
-            "summary": build_sweep_summary(len(discovered), outcomes),
-            "table_rows": table_rows,
-        }
-    )
+    result: dict[str, Any] = {
+        "mode": "file_sweep",
+        "completed": completed,
+        "project_root": str(config.project_root),
+        "file": str(config.relative_file_path),
+        "cli_mode": config.mode,
+        "lang": config.lang,
+        "test_command": config.test_command,
+        "output_path": str(config.output_path),
+        "baseline": _baseline_payload(baseline),
+        "baseline_succeeded": baseline_ok,
+        "function_count": len(discovered),
+        "functions_discovered": [item.name for item in discovered],
+        "functions": function_entries,
+        "summary": build_sweep_summary(len(discovered), outcomes),
+        "table_rows": table_rows,
+    }
+    if coverage_map is not None:
+        result["coverage_map_path"] = (
+            str(config.coverage_map_path) if config.coverage_map_path else None
+        )
+        result["selection"] = build_selection_summary(
+            outcomes, len(coverage_map.universe())
+        )
+    return attach_table_summary(result)
 
 
 def write_json_result(result: dict[str, Any], output_path: Path) -> None:
