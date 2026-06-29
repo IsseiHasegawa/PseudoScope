@@ -17,6 +17,8 @@ completes; a hidden partial file is updated after each function.
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 from typing import Any, Sequence
 
@@ -162,6 +164,26 @@ def build_parser() -> argparse.ArgumentParser:
             "pstrace coverage-map JSON (pstrace-coverage/1). When given, each "
             "function's mutants run only the tests that exercise it, falling "
             "back to --test-command when the map cannot answer."
+        ),
+    )
+    parser.add_argument(
+        "--coverage-map-cmd",
+        default=None,
+        metavar="CMD",
+        help=(
+            "Shell command that generates the --coverage-map JSON (e.g. a pstrace "
+            "recipe). Run before the sweep when the map file is absent (or with "
+            "--refresh-coverage-map), with $PSEUDOCLANG_COVERAGE_MAP set to the "
+            "map's absolute path. Requires --coverage-map."
+        ),
+    )
+    parser.add_argument(
+        "--refresh-coverage-map",
+        action="store_true",
+        help=(
+            "Force --coverage-map-cmd to regenerate the map even if the file "
+            "already exists (default: reuse an existing map). Requires "
+            "--coverage-map-cmd."
         ),
     )
     parser.add_argument(
@@ -361,6 +383,8 @@ def run_step_validate_input(argv: Sequence[str] | None = None) -> PseudoScopeCon
         coverage_map=args.coverage_map,
         assume_coverage_complete=args.assume_coverage_complete,
         test_runner_template=args.test_runner_template,
+        coverage_map_cmd=args.coverage_map_cmd,
+        refresh_coverage_map=args.refresh_coverage_map,
     )
 
 
@@ -452,13 +476,57 @@ def run_step_run_baseline_test(config: PseudoScopeConfig) -> TestRunResult:
     return run_test_command(config)
 
 
+def generate_coverage_map(config: PseudoScopeConfig) -> None:
+    """
+    Run ``--coverage-map-cmd`` to produce the map at ``config.coverage_map_path``.
+
+    The command inherits this process's working directory and gets
+    ``$PSEUDOCLANG_COVERAGE_MAP`` set to the map's absolute path, so a generator
+    (e.g. a pstrace recipe) can write exactly where PseudoClang reads. Its output
+    streams to the console. A non-zero exit or a missing output file is fatal.
+    """
+    out_path = config.coverage_map_path
+    assert config.coverage_map_cmd is not None and out_path is not None
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "PSEUDOCLANG_COVERAGE_MAP": str(out_path)}
+
+    print()
+    print(f"Generating coverage map via --coverage-map-cmd -> {out_path}")
+    print(f"  $ {config.coverage_map_cmd}")
+    completed = subprocess.run(config.coverage_map_cmd, shell=True, env=env)
+    if completed.returncode != 0:
+        raise CoverageMapError(
+            f"--coverage-map-cmd failed (exit {completed.returncode}); "
+            "coverage map was not generated."
+        )
+    if not out_path.exists():
+        raise CoverageMapError(
+            f"--coverage-map-cmd exited 0 but produced no map at {out_path}. "
+            "Ensure the command writes to $PSEUDOCLANG_COVERAGE_MAP."
+        )
+
+
 def load_coverage_map_for_run(config: PseudoScopeConfig) -> CoverageMap | None:
     """
     Load and validate the coverage map (if any) and run staleness checks.
 
     Returns the map, or ``None`` when no ``--coverage-map`` was given. Raises
     :class:`CoverageMapError` on a bad map or a project-root mismatch.
+
+    When ``--coverage-map-cmd`` is set, the map is generated first if its file is
+    absent (or ``--refresh-coverage-map`` was given), otherwise the existing file
+    is reused.
     """
+    if config.coverage_map_cmd is not None and config.coverage_map_path is not None:
+        if config.refresh_coverage_map or not config.coverage_map_path.exists():
+            generate_coverage_map(config)
+        else:
+            print()
+            print(
+                f"Reusing existing coverage map: {config.coverage_map_path} "
+                "(pass --refresh-coverage-map to regenerate)."
+            )
+
     coverage_map = load_coverage_map(config.coverage_map_path)
     if coverage_map is None:
         return None

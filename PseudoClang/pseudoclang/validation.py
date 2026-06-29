@@ -212,6 +212,8 @@ def build_config(
     coverage_map: str | None = None,
     assume_coverage_complete: bool = False,
     test_runner_template: str | None = None,
+    coverage_map_cmd: str | None = None,
+    refresh_coverage_map: bool = False,
 ) -> PseudoScopeConfig:
     """
     Normalize and validate all CLI fields into a :class:`PseudoScopeConfig`.
@@ -235,6 +237,18 @@ def build_config(
         assume_coverage_complete=assume_coverage_complete,
         test_runner_template=test_runner_template,
     )
+
+    cmd_value = coverage_map_cmd.strip() if coverage_map_cmd else None
+    if cmd_value and coverage_map_path is None:
+        raise ConfigError(
+            "--coverage-map-cmd requires --coverage-map (the path the command "
+            "writes the map to and PseudoClang reads it from)."
+        )
+    if refresh_coverage_map and not cmd_value:
+        raise ConfigError(
+            "--refresh-coverage-map requires --coverage-map-cmd (nothing to "
+            "regenerate otherwise)."
+        )
 
     if file is None or not file.strip():
         relative_file_path = None
@@ -266,4 +280,6 @@ def build_config(
         coverage_map_path=coverage_map_path,
         assume_coverage_complete=assume_coverage_complete,
         test_runner_template=template_value,
+        coverage_map_cmd=cmd_value,
+        refresh_coverage_map=refresh_coverage_map,
     )

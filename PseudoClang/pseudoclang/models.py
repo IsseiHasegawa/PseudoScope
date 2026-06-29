@@ -34,3 +34,8 @@ class PseudoScopeConfig:
     coverage_map_path: Path | None = None
     assume_coverage_complete: bool = False
     test_runner_template: str | None = None
+    # Optional auto-generation of the coverage map. When set, the command is run
+    # (cwd inherited, with $PSEUDOCLANG_COVERAGE_MAP pointing at coverage_map_path)
+    # to produce the map before the run, unless the file already exists.
+    coverage_map_cmd: str | None = None
+    refresh_coverage_map: bool = False
