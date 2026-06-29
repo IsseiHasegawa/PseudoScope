@@ -15,6 +15,7 @@ from typing import Any
 from pseudoclang.analysis import FunctionAnalysisOutcome, analyze_function
 from pseudoclang.coverage_map import CoverageMap
 from pseudoclang.discover import DiscoverError, DiscoveredFunction, discover_functions
+from pseudoclang.executor import STATUS_UNCOMPILABLE
 from pseudoclang.models import PseudoScopeConfig
 from pseudoclang.results import (
     ResultWriteError,
@@ -175,5 +176,9 @@ def _print_function_outcome(outcome: FunctionAnalysisOutcome) -> None:
         return
     survived = sum(1 for item in outcome.mutation_results if item.status == "survived")
     killed = sum(1 for item in outcome.mutation_results if item.status == "killed")
+    uncompilable = sum(
+        1 for item in outcome.mutation_results if item.status == STATUS_UNCOMPILABLE
+    )
+    suffix = f", UNCOMPILABLE: {uncompilable}" if uncompilable else ""
     print(f"  Mutations: {len(outcome.mutation_results)} "
-          f"(PASS: {survived}, FAIL: {killed})")
+          f"(PASS: {survived}, FAIL: {killed}{suffix})")

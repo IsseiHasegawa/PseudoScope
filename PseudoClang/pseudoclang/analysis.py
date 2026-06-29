@@ -18,6 +18,7 @@ from pseudoclang.coverage_map import (
     decide_execution,
 )
 from pseudoclang.executor import (
+    STATUS_UNCOMPILABLE,
     MutationExecutionError,
     MutationRunResult,
     run_mutation_tests,
@@ -25,7 +26,12 @@ from pseudoclang.executor import (
 )
 from pseudoclang.locate import FunctionBodyLocation, FunctionLocateError, locate_function_body
 from pseudoclang.models import PseudoScopeConfig
-from pseudoclang.mutate import MutationError, MutatedSource, generate_default_return_mutations
+from pseudoclang.mutate import (
+    MutationError,
+    MutatedSource,
+    UnsupportedReturnTypeError,
+    generate_default_return_mutations,
+)
 from pseudoclang.runner import TestRunResult
 from pseudoclang.source import SourceFile
 
@@ -150,6 +156,18 @@ def analyze_function(
 
     try:
         mutations = generate_default_return_mutations(source, location)
+    except UnsupportedReturnTypeError as exc:
+        # Reference / unresolved-auto returns have no safe default; skip and label.
+        return FunctionAnalysisOutcome(
+            function_name=function_name,
+            status="skipped",
+            reason=f"unsupported_return_type:{exc.category}",
+            start_line=location.start_line,
+            end_line=location.end_line,
+            location=location,
+            mutation_results=[],
+            classification_override="excluded_unsupported_return",
+        )
     except MutationError:
         return FunctionAnalysisOutcome(
             function_name=function_name,
@@ -206,6 +224,25 @@ def analyze_function(
             location=location,
             mutation_results=[],
             classification_override=None,
+            judgment=plan.judgment,
+            selected_tests=selected_tests,
+        )
+
+    if mutation_results and all(
+        result.status == STATUS_UNCOMPILABLE for result in mutation_results
+    ):
+        # Every variant failed to compile: no scorable mutant. Skip + label so the
+        # function is excluded from the analyzed / pass-rate denominators (rule 6),
+        # mirroring the reference / unresolved-auto exclusion above.
+        return FunctionAnalysisOutcome(
+            function_name=function_name,
+            status="skipped",
+            reason="all_mutants_uncompilable",
+            start_line=location.start_line,
+            end_line=location.end_line,
+            location=location,
+            mutation_results=[],
+            classification_override="excluded_uncompilable",
             judgment=plan.judgment,
             selected_tests=selected_tests,
         )

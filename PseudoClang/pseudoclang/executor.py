@@ -8,6 +8,7 @@ pseudo-tested functions.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from pseudoclang.coverage_map import ExecutionPlan, PlanKind
@@ -47,11 +48,61 @@ class MutationRunResult:
     restored: bool
 
 
-def _status_from_test_result(test_result: TestRunResult) -> str:
+#: Per-mutant status for a mutant that failed to compile (a.k.a. SKIPPED). It is
+#: excluded from the mutation-score denominator instead of being miscounted as
+#: ``killed``. Mirrors the coverage-map provenance convention (a distinct,
+#: greppable label rather than overloading an existing state).
+STATUS_UNCOMPILABLE = "uncompilable"
+
+#: Compiler-diagnostic signatures that distinguish a build failure (our mutant did
+#: not compile) from a genuine test failure (the mutant was killed).
+_COMPILE_ERROR_PATTERNS = (
+    re.compile(r"^.*?:\d+:\d+:\s*(?:fatal\s+)?error:", re.MULTILINE),  # clang/gcc
+    re.compile(r"^.*?:\d+:\s*(?:fatal\s+)?error:", re.MULTILINE),      # gcc, no column
+    re.compile(r"\berror C\d{4}\b"),                                   # MSVC
+    re.compile(
+        r"command '[^']*(?:clang|gcc|cc|c\+\+|g\+\+|cl)[^']*' "
+        r"failed with exit (?:status|code)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:clang|gcc|cc1plus|cc1|c\+\+|g\+\+):\s*error:", re.IGNORECASE),
+)
+
+
+def _looks_like_compile_failure(
+    test_result: TestRunResult,
+    source_name: str | None = None,
+) -> bool:
+    """Heuristic: did the build fail (e.g. ``{}`` on a non-constructible type)?
+
+    Scans combined stdout/stderr for C/C++ compiler-error diagnostics. When
+    ``source_name`` is given, the diagnostic must also name the file we mutated: a
+    genuine build failure from our mutation cites that file, whereas unrelated
+    ``error:``-shaped test output almost never names that exact source. Conservative
+    by design: an unmatched non-zero exit stays ``killed``, so a real test failure is
+    never relabeled uncompilable and the mutation score is never inflated.
+
+    Assumes the configured test command fails (non-zero exit) when the build fails;
+    the exit-code gate in :func:`_status_from_test_result` runs first, so a command
+    that tests a stale binary after a failed rebuild is out of scope.
+    """
+    blob = f"{test_result.stdout}\n{test_result.stderr}"
+    if not any(pattern.search(blob) for pattern in _COMPILE_ERROR_PATTERNS):
+        return False
+    return source_name is None or source_name in blob
+
+
+def _status_from_test_result(
+    test_result: TestRunResult,
+    *,
+    source_name: str | None = None,
+) -> str:
     if test_result.timed_out:
         return "timeout"
     if test_result.exit_code == 0:
         return "survived"
+    if _looks_like_compile_failure(test_result, source_name):
+        return STATUS_UNCOMPILABLE
     return "killed"
 
 
@@ -71,7 +122,7 @@ def _mutation_run_result(
         stdout=test_result.stdout,
         stderr=test_result.stderr,
         runtime_seconds=test_result.runtime_seconds,
-        status=_status_from_test_result(test_result),
+        status=_status_from_test_result(test_result, source_name=mutation.path.name),
         restored=restored,
     )
 

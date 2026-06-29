@@ -15,6 +15,17 @@ from pseudoclang.source import SourceFile
 
 SUPPORTED_SOURCE_SUFFIXES = frozenset({".c", ".cpp", ".cc", ".cxx", ".h", ".hpp"})
 
+#: Suffixes treated as a C++ translation unit. ``.h`` stays C (matching
+#: ``load_language`` below), so the two views of "what language is this file"
+#: never disagree.
+CPP_SOURCE_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".hpp"})
+
+
+def source_language(path: Path) -> str:
+    """Return ``"cpp"`` or ``"c"`` for a source path (mirrors ``load_language``)."""
+    return "cpp" if path.suffix.lower() in CPP_SOURCE_SUFFIXES else "c"
+
+
 _IDENTIFIER_NODE_TYPES = frozenset(
     {
         "identifier",

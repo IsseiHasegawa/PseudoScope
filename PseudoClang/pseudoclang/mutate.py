@@ -14,14 +14,34 @@ from pathlib import Path
 
 from pseudoclang.locate import FunctionBodyLocation
 from pseudoclang.source import SourceFile
+from pseudoclang.treesitter_util import source_language
 
 MUTATION_TYPE_DEFAULT_RETURN = "replace_body_with_default_return"
 
-ReturnTypeCategory = str  # void | bool | integer | float | double | string | char | pointer | fallback
+# void | bool | integer | float | double | string | char | pointer | fallback
+# | reference | unresolved
+ReturnTypeCategory = str
+
+#: Categories with no safe default-return mutation: a reference has no bindable
+#: default, and an unresolved ``auto`` / ``decltype(auto)`` cannot be deduced
+#: without a full type checker. The operator skips and labels these.
+EXCLUDED_CATEGORIES = frozenset({"reference", "unresolved"})
 
 
 class MutationError(Exception):
     """Raised when mutation generation fails."""
+
+
+class UnsupportedReturnTypeError(MutationError):
+    """Return type has no safe default-return mutation (reference / unresolved auto).
+
+    Subclasses :class:`MutationError` so existing ``except MutationError`` callers
+    still degrade gracefully; callers that want a distinct label catch this first.
+    """
+
+    def __init__(self, message: str, *, category: str) -> None:
+        super().__init__(message)
+        self.category = category
 
 
 @dataclass(frozen=True)
@@ -143,38 +163,63 @@ _INTEGER_TYPE_PATTERN = re.compile(
     r"unsigned\s+long\s+long|long\s+long|unsigned\s+long|unsigned\s+int|"
     r"unsigned\s+short|unsigned\s+char|"
     r"std::size_t|size_t|"
+    r"unsigned|signed|"
     r"int|short|long"
     r")\b",
     re.IGNORECASE,
 )
 
-_STL_CONTAINER_PATTERN = re.compile(
-    r"\bstd::(?:"
-    r"vector|map|set|list|deque|array|"
-    r"unordered_map|unordered_set|"
-    r"queue|stack|priority_queue|optional"
-    r")\s*<",
+#: ``auto`` / ``decltype(auto)`` placeholder return type (after stripping a
+#: leading ``const`` / ``volatile``) with no trailing-return type to resolve it.
+_PLACEHOLDER_TYPE_PATTERN = re.compile(
+    r"^(?:const\s+|volatile\s+)*(?:auto|decltype\s*\(\s*auto\s*\))$",
     re.IGNORECASE,
 )
+
+#: ``#include <stdbool.h>`` (or ``"stdbool.h"``) anywhere in the translation unit.
+_STDBOOL_INCLUDE_PATTERN = re.compile(
+    r'^[ \t]*#[ \t]*include[ \t]*[<"]stdbool\.h[>"]',
+    re.MULTILINE,
+)
+
 
 def _infer_return_type_category(return_type: str) -> ReturnTypeCategory:
     normalized = _collapse_whitespace(return_type)
     lower = normalized.lower()
 
+    # decltype(<expr>) cannot be resolved without a type checker (and a '&' inside
+    # the expression must not be read as a reference marker); exclude and label it.
+    if "decltype(" in lower:
+        return "unresolved"
+
+    # References: a '&' anywhere (incl. 'T*&' and rvalue 'T&&') means a reference
+    # return, which this operator excludes (no bindable default).
+    if "&" in normalized:
+        return "reference"
+
     if "*" in normalized:
         return "pointer"
 
-    if re.search(r"\bvoid\b", lower):
+    # Bare 'auto' that survived trailing-return resolution cannot be deduced
+    # without a type checker; exclude and label it.
+    if _PLACEHOLDER_TYPE_PATTERN.match(normalized):
+        return "unresolved"
+
+    if re.fullmatch(r"(?:const\s+|volatile\s+)*void", lower):
         return "void"
+
+    # Any templated/generic type ('<...>'): STL container, smart ptr, optional,
+    # std::function, or a user template -- all take '{}' in C++. Checked before the
+    # scalar keywords so a template argument (e.g. vector<bool>, tuple<int>) is not
+    # mistaken for the return type itself.
+    if "<" in normalized:
+        return "fallback"
 
     if re.search(r"\bbool\b", lower):
         return "bool"
 
-    if re.search(r"(?:std::)?string\b", lower):
+    if re.search(r"\b(?:std::)?string\b", lower):
         return "string"
-
-    if _STL_CONTAINER_PATTERN.search(normalized):
-        return "fallback"
 
     if re.search(r"\bchar\b", lower):
         return "char"
@@ -193,24 +238,44 @@ def _infer_return_type_category(return_type: str) -> ReturnTypeCategory:
 
 def _replacement_bodies_for_category(
     category: ReturnTypeCategory,
+    *,
+    return_type: str,
+    is_cpp: bool,
+    has_stdbool: bool,
 ) -> list[str]:
+    """Return-statement variants for ``category`` in the C++ or C column.
+
+    Two distinct variants are emitted wherever two safe values exist (so a mutant
+    cannot accidentally equal the original return value). Pointers and opaque
+    aggregate types stay single-valued.
+    """
     if category == "void":
-        return ["\n    return;\n"]
+        return ["\n"]  # empty body, no return value
     if category == "bool":
-        return ["\n    return false;\n", "\n    return true;\n"]
+        # C without <stdbool.h> has no false/true keywords; fall back to 0/1.
+        if is_cpp or has_stdbool:
+            return ["\n    return false;\n", "\n    return true;\n"]
+        return ["\n    return 0;\n", "\n    return 1;\n"]
     if category == "integer":
         return ["\n    return 0;\n", "\n    return 1;\n"]
-    if category == "float":
-        return ["\n    return 0.0f;\n", "\n    return 1.0f;\n"]
-    if category == "double":
+    if category in ("float", "double"):
         return ["\n    return 0.0;\n", "\n    return 1.0;\n"]
     if category == "string":
-        return ['\n    return "";\n', '\n    return "A";\n']
+        if is_cpp:
+            return ['\n    return "";\n', '\n    return "A";\n']
+        # No std::string in C; treat as a pointer (single null variant).
+        return ["\n    return NULL;\n"]
     if category == "char":
         return ["\n    return '\\0';\n", "\n    return 'a';\n"]
     if category == "pointer":
-        return ["\n    return nullptr;\n"]
-    return ["\n    return {};\n"]
+        return ["\n    return nullptr;\n"] if is_cpp else ["\n    return NULL;\n"]
+    # fallback: class / struct / enum / template / STL / smart ptr / optional.
+    if is_cpp:
+        return ["\n    return {};\n"]  # {} for default-constructible / aggregate
+    # C aggregates: enums take 0; everything else a zero compound literal.
+    if re.search(r"\benum\b", return_type.lower()):
+        return ["\n    return 0;\n"]
+    return [f"\n    return ({return_type}){{0}};\n"]
 
 
 def replacement_return_line(replacement_body: str) -> str:
@@ -218,7 +283,66 @@ def replacement_return_line(replacement_body: str) -> str:
         stripped = line.strip()
         if stripped.startswith("return"):
             return stripped
-    return replacement_body.strip()
+    stripped = replacement_body.strip()
+    return stripped if stripped else "(empty body)"
+
+
+def _split_signature_around_params(
+    source: SourceFile,
+    location: FunctionBodyLocation,
+) -> tuple[str | None, str | None]:
+    """Split the signature around the function's parameter list.
+
+    Returns ``(return_head, after_params)``: the text before the function name's
+    ``(`` and the text after its matching ``)``. Either is ``None`` when the
+    parameter list cannot be located. Anchoring on the name's parameter list keeps a
+    ``->`` inside ``operator->`` or a default argument from being mistaken for a
+    trailing-return arrow.
+    """
+    sig = _collapse_whitespace(_extract_signature_text(source, location))
+    local_name = location.function_name.split("::")[-1]
+    match = re.search(rf"(?<![\w]){re.escape(local_name)}\s*\(", sig)
+    if not match:
+        return None, None
+
+    head = sig[: match.start()]
+    depth = 0
+    index = match.end() - 1
+    while index < len(sig):
+        char = sig[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return head, sig[index + 1 :]
+        index += 1
+    return head, None
+
+
+def _reconcile_with_signature(
+    return_type: str,
+    source: SourceFile,
+    location: FunctionBodyLocation,
+) -> str:
+    """Recover reference / trailing-return info the Tree-sitter spelling can drop.
+
+    The spelling loses ``&`` on ``const T&`` (-> ``const``), ``&&`` on ``int&&``
+    (-> ``int``), and the ``-> T`` of a trailing-return ``auto f() -> T``. The raw
+    signature text keeps them, so consult it for exactly those cases.
+    """
+    head, after = _split_signature_around_params(source, location)
+
+    if _PLACEHOLDER_TYPE_PATTERN.match(return_type):
+        if after:
+            match = re.search(r"->\s*(.+?)\s*$", after)
+            if match:
+                return _strip_signature_prefixes(match.group(1).strip())
+        return return_type  # bare auto / decltype(auto): left unresolved
+
+    if "&" not in return_type and head is not None and "&" in head:
+        return f"{return_type}&"
+    return return_type
 
 
 def _resolve_return_type(
@@ -229,15 +353,20 @@ def _resolve_return_type(
         return_type = _strip_signature_prefixes(
             _collapse_whitespace(location.return_type_spelling)
         )
-        if not return_type:
-            raise MutationError(
-                f"Could not infer return type from Tree-sitter for "
-                f"'{location.function_name}' in {source.path}."
-            )
-        return return_type
+    else:
+        signature_text = _extract_signature_text(source, location)
+        return_type = _return_type_from_signature(
+            signature_text, location.function_name
+        )
 
-    signature_text = _extract_signature_text(source, location)
-    return _return_type_from_signature(signature_text, location.function_name)
+    return_type = _reconcile_with_signature(return_type, source, location)
+
+    if not return_type:
+        raise MutationError(
+            f"Could not infer return type for '{location.function_name}' "
+            f"in {source.path}."
+        )
+    return return_type
 
 
 def resolve_return_type_category(
@@ -265,7 +394,21 @@ def generate_default_return_mutations(
 
     return_type = _resolve_return_type(source, location)
     category = _infer_return_type_category(return_type)
-    replacements = _replacement_bodies_for_category(category)
+    if category in EXCLUDED_CATEGORIES:
+        raise UnsupportedReturnTypeError(
+            f"Return type {return_type!r} for '{location.function_name}' has no "
+            f"safe default-return mutation ({category}); excluded from this operator.",
+            category=category,
+        )
+
+    is_cpp = source_language(source.path) == "cpp"
+    has_stdbool = is_cpp or bool(_STDBOOL_INCLUDE_PATTERN.search(source.content))
+    replacements = _replacement_bodies_for_category(
+        category,
+        return_type=return_type,
+        is_cpp=is_cpp,
+        has_stdbool=has_stdbool,
+    )
 
     mutations: list[MutatedSource] = []
     for replacement_body in replacements:

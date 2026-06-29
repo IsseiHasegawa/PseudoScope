@@ -41,6 +41,7 @@ from pseudoclang.coverage_map import (
     verify_project_root,
 )
 from pseudoclang.executor import (
+    STATUS_UNCOMPILABLE,
     MutationExecutionError,
     MutationRunResult,
 )
@@ -238,6 +239,9 @@ def print_mutation_tests_summary(results: list[MutationRunResult]) -> None:
     pass_count = sum(1 for item in results if item.status == "survived")
     fail_count = sum(1 for item in results if item.status == "killed")
     timeout_count = sum(1 for item in results if item.status == "timeout")
+    uncompilable_count = sum(
+        1 for item in results if item.status == STATUS_UNCOMPILABLE
+    )
 
     print()
     print("Mutation tests executed.")
@@ -245,6 +249,7 @@ def print_mutation_tests_summary(results: list[MutationRunResult]) -> None:
     print(f"PASS (PT candidate): {pass_count}")
     print(f"FAIL (detected): {fail_count}")
     print(f"TIMEOUT: {timeout_count}")
+    print(f"UNCOMPILABLE (skipped): {uncompilable_count}")
     print()
     print("Results:")
     for result in results:

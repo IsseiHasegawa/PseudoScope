@@ -17,7 +17,7 @@ from pseudoclang.coverage_map import (
     CoverageMap,
 )
 from pseudoclang.discover import DiscoveredFunction
-from pseudoclang.executor import MutationRunResult
+from pseudoclang.executor import STATUS_UNCOMPILABLE, MutationRunResult
 from pseudoclang.models import PseudoScopeConfig
 from pseudoclang.mutate import replacement_return_line
 from pseudoclang.runner import TestRunResult
@@ -35,13 +35,16 @@ def classify_function(mutation_results: list[MutationRunResult]) -> str:
     Returns one of: ``not_analyzed``, ``inconclusive_timeout``,
     ``pseudo_tested_candidate``, ``not_pseudo_tested``, ``partially_tested``.
     """
-    if not mutation_results:
+    # Uncompilable mutants cannot be judged; exclude them from classification
+    # (and the score denominator) rather than counting them as killed.
+    scored = [r for r in mutation_results if r.status != STATUS_UNCOMPILABLE]
+    if not scored:
         return "not_analyzed"
 
-    if any(result.status == "timeout" for result in mutation_results):
+    if any(result.status == "timeout" for result in scored):
         return "inconclusive_timeout"
 
-    statuses = {result.status for result in mutation_results}
+    statuses = {result.status for result in scored}
     if statuses == {"survived"}:
         return "pseudo_tested_candidate"
     if statuses == {"killed"}:
@@ -58,6 +61,7 @@ def display_status(status: str) -> str:
         "survived": "PASS (PT candidate)",
         "killed": "FAIL (detected)",
         "timeout": "TIMEOUT",
+        STATUS_UNCOMPILABLE: "UNCOMPILABLE (skipped)",
     }
     return labels.get(status, status)
 
@@ -307,15 +311,22 @@ def _classification_payload(
     survived = sum(1 for item in mutation_results if item.status == "survived")
     killed = sum(1 for item in mutation_results if item.status == "killed")
     timeout = sum(1 for item in mutation_results if item.status == "timeout")
-    survival_rate = (survived / total) if total else 0.0
+    uncompilable = sum(
+        1 for item in mutation_results if item.status == STATUS_UNCOMPILABLE
+    )
+    # Uncompilable mutants are excluded from the mutation-score denominator.
+    scored = total - uncompilable
+    survival_rate = (survived / scored) if scored else 0.0
 
     return {
         "label": label,
         "survival_rate": survival_rate,
         "total_mutations": total,
+        "scored_mutations": scored,
         "survived": survived,
         "killed": killed,
         "timeout": timeout,
+        "uncompilable": uncompilable,
     }
 
 
