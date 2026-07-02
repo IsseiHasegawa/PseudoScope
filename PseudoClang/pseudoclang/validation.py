@@ -214,6 +214,7 @@ def build_config(
     test_runner_template: str | None = None,
     coverage_map_cmd: str | None = None,
     refresh_coverage_map: bool = False,
+    skip_runner_check: bool = False,
 ) -> PseudoScopeConfig:
     """
     Normalize and validate all CLI fields into a :class:`PseudoScopeConfig`.
@@ -282,4 +283,5 @@ def build_config(
         test_runner_template=template_value,
         coverage_map_cmd=cmd_value,
         refresh_coverage_map=refresh_coverage_map,
+        skip_runner_check=skip_runner_check,
     )

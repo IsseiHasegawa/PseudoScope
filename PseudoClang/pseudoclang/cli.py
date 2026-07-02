@@ -48,6 +48,7 @@ from pseudoclang.executor import (
     MutationRunResult,
 )
 from pseudoclang.models import ConfigError, PseudoScopeConfig
+from pseudoclang.preflight import PreflightError, check_test_runner_rebuilds
 from pseudoclang.discover import DiscoverError, discover_functions
 from pseudoclang.results import (
     ResultWriteError,
@@ -203,6 +204,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Command template used to run a selected subset of tests; must "
             "contain '{selection}', e.g. \"pip install -e . -q && pytest "
             "{selection}\". Without it, selection degrades to full runs."
+        ),
+    )
+    parser.add_argument(
+        "--skip-runner-check",
+        action="store_true",
+        help=(
+            "Skip the preflight check that --test-runner-template rebuilds the "
+            "target before judging selected mutants (default: run it when a "
+            "coverage map and template are both set)."
         ),
     )
     return parser
@@ -385,6 +395,7 @@ def run_step_validate_input(argv: Sequence[str] | None = None) -> PseudoScopeCon
         test_runner_template=args.test_runner_template,
         coverage_map_cmd=args.coverage_map_cmd,
         refresh_coverage_map=args.refresh_coverage_map,
+        skip_runner_check=args.skip_runner_check,
     )
 
 
@@ -603,6 +614,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     except CoverageMapError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+    if (
+        coverage_map is not None
+        and config.test_runner_template is not None
+        and not config.skip_runner_check
+    ):
+        try:
+            check_test_runner_rebuilds(config, coverage_map)
+        except PreflightError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     if config.function_name is None:
         return run_file_sweep_mode(config, coverage_map)

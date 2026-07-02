@@ -39,3 +39,6 @@ class PseudoScopeConfig:
     # to produce the map before the run, unless the file already exists.
     coverage_map_cmd: str | None = None
     refresh_coverage_map: bool = False
+    # Skip the preflight check that --test-runner-template rebuilds the target
+    # before judging selected mutants against it.
+    skip_runner_check: bool = False
