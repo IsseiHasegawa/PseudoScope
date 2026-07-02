@@ -193,7 +193,12 @@ def main(argv: list[str] | None = None) -> int:
     tests_json = work / "pstrace_tests.json"
     test_env = dict(os.environ)
     _prepend_path(test_env, py_bin_dir)
-    _prepend_pythonpath(test_env, str(_REPO), str(project_root))
+    # Only add the pstrace package (for ``-p pstrace.plugin``); do NOT put the
+    # project root on PYTHONPATH. For an inplace build the extension is already
+    # importable via the test command's cwd, and for an installed build (e.g.
+    # meson-python -> site-packages) a source dir on the path would shadow the
+    # installed, instrumented package with an unbuilt copy.
+    _prepend_pythonpath(test_env, str(_REPO))
     addopts = test_env.get("PYTEST_ADDOPTS", "")
     test_env["PYTEST_ADDOPTS"] = (addopts + " -p pstrace.plugin").strip()
     test_env["PSTRACE_OUTPUT"] = str(raw_tsv)
