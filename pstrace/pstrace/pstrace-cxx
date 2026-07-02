@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Executable C++-compiler shim: point CXX at this file. Delegates to pstrace.wrapper.
+
+Self-locating so it works even when the build system does not preserve
+PYTHONPATH: it adds the directory containing the ``pstrace`` package to sys.path.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from pstrace.wrapper import main
+
+raise SystemExit(main("cxx"))

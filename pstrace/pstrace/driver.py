@@ -1,0 +1,253 @@
+"""Generic, build-system-agnostic pstrace driver (successor to the ujson recipe).
+
+Given a project's own *build* and *test* commands, this:
+
+  1. compiles the pstrace hook to an object once,
+  2. runs the build command with ``CC`` / ``CXX`` (and ``LDSHARED`` for
+     setuptools) pointed at the pstrace compiler wrapper, so the target's
+     C/C++ is instrumented and the hook is linked into its extension(s),
+  3. runs the test command under pytest with the tracing plugin loaded, and
+  4. turns the raw trace into a ``pstrace-coverage/1`` map for PseudoClang.
+
+It makes no assumptions about the build system: setuptools, Meson, CMake and
+autotools all honour ``CC`` / ``CXX``. Point PseudoClang's ``--coverage-map-cmd``
+at an invocation of this module.
+
+Example (setuptools target)::
+
+    python -m pstrace.driver \
+        --project-root ultrajson --python ultrajson/.venv/bin/python \
+        --module ujson --src-root ultrajson/src/ujson \
+        --build-cmd "python setup.py build_ext --inplace --force" \
+        --test-cmd  "python -m pytest tests/" \
+        --coverage-json coverage.json
+
+For a Meson / meson-python target the only change is the build command, e.g.
+``--build-cmd "pip install -e . --no-build-isolation --force-reinstall"``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+_PKG_DIR = Path(__file__).resolve().parent  # <repo>/pstrace/pstrace
+_REPO = _PKG_DIR.parent  # <repo>/pstrace (the dir that contains the package)
+_HOOK_SRC = _REPO / "src" / "pstrace_hook.c"
+_INCLUDE = _REPO / "include"
+_SHIM_CC = _PKG_DIR / "pstrace-cc"
+_SHIM_CXX = _PKG_DIR / "pstrace-cxx"
+
+
+class DriverError(Exception):
+    """A step (build, test, report) failed."""
+
+
+def _target_config_vars(python: str) -> dict[str, str]:
+    """Read CC/CXX/LDSHARED/LDCXXSHARED from the target interpreter's sysconfig."""
+    code = (
+        "import sysconfig, json;"
+        "print(json.dumps({k: (sysconfig.get_config_var(k) or '') "
+        "for k in ['CC', 'CXX', 'LDSHARED', 'LDCXXSHARED']}))"
+    )
+    try:
+        out = subprocess.check_output([python, "-c", code], text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise DriverError(f"cannot read sysconfig from {python!r}: {exc}") from exc
+    return json.loads(out)
+
+
+def _swap_launcher(config_value: str, shim: Path) -> str:
+    """Replace the compiler token in an ``LDSHARED``-style string with ``shim``.
+
+    ``"clang -bundle -undefined dynamic_lookup"`` -> ``"<shim> -bundle ..."``.
+    The wrapper re-adds the real compiler from ``PSTRACE_REAL_CC``.
+    """
+    parts = config_value.split()
+    if not parts:
+        return str(shim)
+    return " ".join([str(shim)] + parts[1:])
+
+
+def _compile_hook(real_cc: str, work: Path) -> Path:
+    hook_obj = work / "pstrace_hook.o"
+    cmd = [
+        *shlex.split(real_cc),
+        "-c",
+        "-fPIC",
+        "-O2",
+        "-I",
+        str(_INCLUDE),
+        str(_HOOK_SRC),
+        "-o",
+        str(hook_obj),
+    ]
+    proc = subprocess.run(cmd)
+    if proc.returncode != 0:
+        raise DriverError(f"failed to compile the pstrace hook: {' '.join(cmd)}")
+    return hook_obj
+
+
+def _run(command: str, *, cwd: Path, env: dict[str, str], label: str) -> None:
+    print(f"pstrace-driver: [{label}] $ {command}", file=sys.stderr)
+    proc = subprocess.run(command, cwd=str(cwd), env=env, shell=True)
+    if proc.returncode != 0:
+        raise DriverError(f"{label} command failed (exit {proc.returncode}): {command}")
+
+
+def _prepend_pythonpath(env: dict[str, str], *paths: str) -> None:
+    existing = env.get("PYTHONPATH", "")
+    parts = [p for p in paths if p]
+    if existing:
+        parts.append(existing)
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+
+
+def _prepend_path(env: dict[str, str], directory: str) -> None:
+    """Put ``directory`` first on PATH so bare ``python`` / ``pytest`` in the
+    user's commands resolve to the target interpreter (venv-activation style)."""
+    existing = env.get("PATH", "")
+    env["PATH"] = directory + (os.pathsep + existing if existing else "")
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="pstrace.driver", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--project-root", required=True,
+                    help="target project root (cwd for build and test)")
+    ap.add_argument("--build-cmd", required=True,
+                    help="shell command that performs a clean, forced rebuild")
+    ap.add_argument("--test-cmd", required=True,
+                    help="shell command that runs the pytest suite")
+    ap.add_argument("--coverage-json", required=True,
+                    help="output path for the pstrace-coverage/1 map")
+    ap.add_argument("--src-root", required=True,
+                    help="keep only functions defined under this source tree")
+    group = ap.add_mutually_exclusive_group(required=True)
+    group.add_argument("--module", help="importable module whose .so exports the hook")
+    group.add_argument("--lib", help="explicit path to the instrumented .so")
+    ap.add_argument("--python", default=sys.executable,
+                    help="target interpreter (default: the driver's own)")
+    ap.add_argument("--real-cc", help="real C compiler (default: target sysconfig CC)")
+    ap.add_argument("--real-cxx", help="real C++ compiler (default: target sysconfig CXX)")
+    ap.add_argument("--include", action="append", default=[],
+                    help="extra include dir for instrumented sources (repeatable)")
+    ap.add_argument("--flag", action="append", default=[],
+                    help="extra compile flag appended verbatim (repeatable)")
+    ap.add_argument("--work-dir", help="keep artifacts here (default: a temp dir)")
+    args = ap.parse_args(argv)
+
+    project_root = Path(args.project_root).resolve()
+    if not project_root.is_dir():
+        ap.error(f"--project-root is not a directory: {project_root}")
+    if not _HOOK_SRC.is_file():
+        ap.error(f"hook source missing: {_HOOK_SRC}")
+
+    work = Path(args.work_dir).resolve() if args.work_dir else Path(tempfile.mkdtemp(prefix="pstrace-"))
+    work.mkdir(parents=True, exist_ok=True)
+
+    # Do not resolve symlinks: a venv's ``bin/python`` symlinks to the base
+    # interpreter, and we want the venv's own bin dir on PATH so bare ``python``
+    # / ``pytest`` in the user's commands hit the venv, not the base install.
+    py_bin_dir = os.path.dirname(os.path.abspath(args.python))
+
+    cfg = _target_config_vars(args.python)
+    real_cc = args.real_cc or (cfg["CC"].split()[0] if cfg["CC"] else "cc")
+    real_cxx = args.real_cxx or (cfg["CXX"].split()[0] if cfg["CXX"] else "c++")
+
+    try:
+        hook_obj = _compile_hook(real_cc, work)
+    except DriverError as exc:
+        print(f"pstrace-driver: {exc}", file=sys.stderr)
+        return 1
+
+    include_dirs = os.pathsep.join([str(_INCLUDE), *[os.path.abspath(d) for d in args.include]])
+
+    # --- build environment: point the toolchain at the wrapper -----------------
+    build_env = dict(os.environ)
+    build_env.update(
+        PSTRACE_REAL_CC=real_cc,
+        PSTRACE_REAL_CXX=real_cxx,
+        PSTRACE_HOOK_OBJ=str(hook_obj),
+        PSTRACE_INCLUDE=include_dirs,
+        CC=str(_SHIM_CC),
+        CXX=str(_SHIM_CXX),
+    )
+    if args.flag:
+        build_env["PSTRACE_EXTRA_FLAGS"] = " ".join(args.flag)
+    # setuptools links via LDSHARED, not CC; Meson/CMake ignore these harmlessly.
+    if cfg["LDSHARED"]:
+        build_env["LDSHARED"] = _swap_launcher(cfg["LDSHARED"], _SHIM_CC)
+    if cfg["LDCXXSHARED"]:
+        build_env["LDCXXSHARED"] = _swap_launcher(cfg["LDCXXSHARED"], _SHIM_CXX)
+    _prepend_path(build_env, py_bin_dir)
+
+    # --- test environment: load the plugin, resolve the hook symbol ------------
+    raw_tsv = work / "pstrace_raw.tsv"
+    tests_json = work / "pstrace_tests.json"
+    test_env = dict(os.environ)
+    _prepend_path(test_env, py_bin_dir)
+    _prepend_pythonpath(test_env, str(_REPO), str(project_root))
+    addopts = test_env.get("PYTEST_ADDOPTS", "")
+    test_env["PYTEST_ADDOPTS"] = (addopts + " -p pstrace.plugin").strip()
+    test_env["PSTRACE_OUTPUT"] = str(raw_tsv)
+    test_env["PSTRACE_TESTS"] = str(tests_json)
+    if args.module:
+        test_env["PSTRACE_MODULE"] = args.module
+    if args.lib:
+        test_env["PSTRACE_LIB"] = args.lib
+
+    try:
+        _run(args.build_cmd, cwd=project_root, env=build_env, label="build")
+    except DriverError as exc:
+        print(f"pstrace-driver: {exc}", file=sys.stderr)
+        return 1
+
+    # Test failures are tolerated: the passing-tests sidecar drops failed/errored
+    # tests from the coverage universe anyway, and a run with a few red tests
+    # still yields a valid trace. A hard error (e.g. pytest missing) instead
+    # produces no trace and is caught by the raw-trace check below.
+    print(f"pstrace-driver: [test] $ {args.test_cmd}", file=sys.stderr)
+    test_proc = subprocess.run(args.test_cmd, cwd=str(project_root), env=test_env, shell=True)
+    if test_proc.returncode != 0:
+        print(f"pstrace-driver: test command exited {test_proc.returncode} "
+              "(continuing; only passing tests are kept in the coverage map)",
+              file=sys.stderr)
+
+    if not raw_tsv.is_file() or raw_tsv.stat().st_size == 0:
+        print(f"pstrace-driver: no trace produced at {raw_tsv}; was the extension "
+              "rebuilt with the wrapper and PSTRACE_MODULE/--lib correct?",
+              file=sys.stderr)
+        return 1
+
+    # --- report: raw trace -> coverage map -------------------------------------
+    report_env = dict(os.environ)
+    _prepend_pythonpath(report_env, str(_REPO))
+    report_cmd = [
+        args.python, "-m", "pstrace.report",
+        "--raw", str(raw_tsv),
+        "--src-root", str(Path(args.src_root).resolve()),
+        "--project-root", str(project_root),
+        "--tests", str(tests_json),
+        "--coverage-json", str(Path(args.coverage_json).resolve()),
+    ]
+    print(f"pstrace-driver: [report] $ {' '.join(shlex.quote(c) for c in report_cmd)}",
+          file=sys.stderr)
+    proc = subprocess.run(report_cmd, env=report_env)
+    if proc.returncode != 0:
+        print("pstrace-driver: report failed", file=sys.stderr)
+        return 1
+
+    print(f"pstrace-driver: done -> {Path(args.coverage_json).resolve()}", file=sys.stderr)
+    print(f"pstrace-driver: artifacts in {work}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
