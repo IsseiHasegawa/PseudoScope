@@ -86,3 +86,59 @@ def test_hook_link_match_limits_hook_to_one_extension(monkeypatch):
     other = build_command("c", ["-bundle", "b.o", "-o", "_umath_tests.cpython-314.so"])
     assert "/hook.o" in hooked
     assert "/hook.o" not in other  # avoids a second hook copy that splits state
+
+
+# -- MSVC / clang-cl (Windows) flag mapping; argv-level only, no Windows here --
+
+
+def test_msvc_compile_gets_penter_flags(monkeypatch):
+    monkeypatch.setenv("PSTRACE_REAL_CC", "cl")
+    out = build_command("c", ["/c", "foo.c", "/Fo:foo.obj"])
+    assert out[0] == "cl"
+    assert all(f in out for f in ("/Gh", "/GH", "/Od", "/Zi"))
+    assert "/I/inc" in out
+    assert "-finstrument-functions" not in " ".join(out)  # cl has no such flag
+
+
+def test_clang_cl_compile_uses_finstrument(monkeypatch):
+    monkeypatch.setenv("PSTRACE_REAL_CC", "clang-cl.exe")
+    out = build_command("c", ["/c", "foo.c", "/Fo:foo.obj"])
+    assert out[0] == "clang-cl.exe"
+    assert "/clang:-finstrument-functions" in out
+    assert "/Od" in out and "/Zi" in out
+    assert "/Gh" not in out  # clang-cl reuses the __cyg_profile hook, not _penter
+
+
+def test_msvc_dll_link_gets_hook(monkeypatch):
+    monkeypatch.setenv("PSTRACE_REAL_CC", "cl")
+    out = build_command("c", ["/LD", "foo.obj", "/Fe:foo.pyd"])
+    assert "/hook.o" in out
+    assert "/Gh" not in out  # no source compiled at the link
+
+
+def test_clang_cl_combined_compile_and_dll_gets_both(monkeypatch):
+    monkeypatch.setenv("PSTRACE_REAL_CC", "clang-cl")
+    out = build_command("c", ["/LD", "foo.c", "/Fe:foo.pyd"])
+    assert "/clang:-finstrument-functions" in out
+    assert "/hook.o" in out
+
+
+def test_msvc_probe_is_passed_through(monkeypatch):
+    monkeypatch.setenv("PSTRACE_REAL_CC", "cl")
+    args = ["/c", r"C:\build\meson-private\tmp\testfile.c", "/Fo:o.obj"]
+    assert build_command("c", args) == ["cl"] + args
+
+
+def test_msvc_executable_link_is_passed_through(monkeypatch):
+    monkeypatch.setenv("PSTRACE_REAL_CC", "cl")
+    out = build_command("c", ["foo.obj", "/Fe:foo.exe"])
+    assert out == ["cl", "foo.obj", "/Fe:foo.exe"]  # not a DLL, left alone
+
+
+def test_msvc_hook_link_match_selects_one_extension(monkeypatch):
+    monkeypatch.setenv("PSTRACE_REAL_CC", "cl")
+    monkeypatch.setenv("PSTRACE_HOOK_LINK_MATCH", "_core")
+    hooked = build_command("c", ["/LD", "a.obj", "/Fe:_core.pyd"])
+    other = build_command("c", ["/LD", "b.obj", "/Fe:other.pyd"])
+    assert "/hook.o" in hooked
+    assert "/hook.o" not in other

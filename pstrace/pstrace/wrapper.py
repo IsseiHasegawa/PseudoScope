@@ -108,6 +108,72 @@ def _link_wants_hook(args: list[str], hook_match: str) -> bool:
     return out is not None and hook_match in out
 
 
+# --- MSVC / clang-cl (Windows) ------------------------------------------------
+# Not yet exercised end-to-end (no Windows toolchain here); the argument mapping
+# below is unit-tested. clang-cl is Clang, so it can use -finstrument-functions
+# and the existing __cyg_profile hook. Real ``cl`` has no such flag: /Gh /GH make
+# it call _penter / _pexit instead, which need a separate hook that is not built
+# yet (see docs/windows-msvc.md).
+_MSVC_INSTR_FLAGS = ["/Gh", "/GH", "/Od", "/Zi"]
+_CLANG_CL_INSTR_FLAGS = [
+    "/clang:-finstrument-functions", "/clang:-fno-omit-frame-pointer", "/Od", "/Zi",
+]
+#: Flags that make an MSVC link emit a DLL (a Python ``.pyd`` is a DLL).
+_MSVC_DLL_FLAGS = ("/LD", "/LDd", "/DLL")
+
+
+def _compiler_flavor(real_argv: list[str]) -> str:
+    """Classify the delegate compiler: ``msvc``, ``clang-cl``, or ``gcc``.
+
+    ``gcc`` covers gcc/clang/cc (the GNU ``-flag`` CLI); ``cl`` and ``clang-cl``
+    use the ``/flag`` CLI and different instrumentation switches.
+    """
+    name = os.path.basename(real_argv[0]).lower() if real_argv else ""
+    if name.endswith(".exe"):
+        name = name[:-4]
+    if name == "clang-cl":
+        return "clang-cl"
+    if name == "cl":
+        return "msvc"
+    return "gcc"
+
+
+def _msvc_makes_dll(args: list[str]) -> bool:
+    if any(a in _MSVC_DLL_FLAGS for a in args):
+        return True
+    return any(a.lower().endswith((".dll", ".pyd")) for a in args)
+
+
+def _msvc_link_wants_hook(args: list[str], hook_match: str) -> bool:
+    # MSVC names its output via /Fe: or /OUT:, not -o, so match the substring
+    # against any argument to single out one extension.
+    if not hook_match:
+        return True
+    return any(hook_match in a for a in args)
+
+
+def _rewrite_msvc(flavor: str, args: list[str], includes: list[str], hook_obj: str,
+                  targets: list[str], hook_match: str, extra: list[str]) -> list[str]:
+    """Rewrite an MSVC / clang-cl invocation: instrument compiles, hook DLL links."""
+    new_args = list(args)
+    if _looks_like_check(args):
+        return new_args
+
+    is_compile = "/c" in args or "-c" in args
+    is_dll_link = _msvc_makes_dll(args)
+    has_source = any(a.endswith(_SRC_EXTS) for a in args)
+    compiles_source = is_compile or (is_dll_link and has_source)
+
+    if compiles_source and _instruments_these_sources(args, targets):
+        for inc in includes:
+            new_args.append(f"/I{inc}")
+        instr = _CLANG_CL_INSTR_FLAGS if flavor == "clang-cl" else _MSVC_INSTR_FLAGS
+        new_args += instr + extra
+    if is_dll_link and hook_obj and _msvc_link_wants_hook(args, hook_match):
+        new_args.append(hook_obj)
+    return new_args
+
+
 def build_command(lang: str, args: list[str]) -> list[str]:
     """Return the full argv (real compiler + rewritten args) for ``args``.
 
@@ -118,13 +184,21 @@ def build_command(lang: str, args: list[str]) -> list[str]:
     real = os.environ.get(real_var) or ("c++" if lang == "cxx" else "cc")
     real_argv = shlex.split(real)
 
-    flags_env = os.environ.get("PSTRACE_FLAGS")
-    flags = shlex.split(flags_env) if flags_env else list(DEFAULT_FLAGS)
-    flags += shlex.split(os.environ.get("PSTRACE_EXTRA_FLAGS", ""))
     includes = _split_paths("PSTRACE_INCLUDE")
     hook_obj = os.environ.get("PSTRACE_HOOK_OBJ", "")
     targets = _split_paths("PSTRACE_TARGET")
     hook_match = os.environ.get("PSTRACE_HOOK_LINK_MATCH", "")
+    extra = shlex.split(os.environ.get("PSTRACE_EXTRA_FLAGS", ""))
+
+    flavor = _compiler_flavor(real_argv)
+    if flavor != "gcc":
+        return real_argv + _rewrite_msvc(
+            flavor, args, includes, hook_obj, targets, hook_match, extra
+        )
+
+    flags_env = os.environ.get("PSTRACE_FLAGS")
+    flags = shlex.split(flags_env) if flags_env else list(DEFAULT_FLAGS)
+    flags += extra
 
     new_args = list(args)
 

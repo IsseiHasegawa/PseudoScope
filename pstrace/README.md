@@ -143,8 +143,12 @@ symbolizer (`atos` / `addr2line`) must find `-g` debug data:
   throwaway `pip install .` that deletes its build dir) and the binary must not
   be **stripped** (scikit-build-core strips by default: `-Cinstall.strip=false`).
 
-Only Clang/GCC on Linux/macOS are supported (`-finstrument-functions` is not an
-MSVC feature). The hook reaches the extension one of two ways (`--hook-mode`,
+Validated on Clang/GCC, Linux/macOS. **Windows is not supported yet**: the
+wrapper already maps the compile flags (`clang-cl` -> `-finstrument-functions`,
+which reuses the existing hook; `cl.exe` -> `/Gh /GH`, which needs a separate
+`_penter` / `_pexit` hook), but the hook, linking, and PDB symbolization are not
+built. See [`docs/windows-msvc.md`](docs/windows-msvc.md) for the plan. The hook
+reaches the extension one of two ways (`--hook-mode`,
 default `auto`): **link injection** builds the hook into the `.so`, while
 **preload** loads a shared `libpstrace` via `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES`.
 Linux requires preload (a hook linked into a CPython extension is loaded
