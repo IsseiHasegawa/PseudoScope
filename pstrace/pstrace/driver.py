@@ -96,6 +96,7 @@ def _compile_hook(real_cc: str, work: Path) -> Path:
         "-c",
         "-fPIC",
         "-O2",
+        "-pthread",
         "-I",
         str(_INCLUDE),
         str(_HOOK_SRC),
@@ -121,7 +122,7 @@ def _build_hook_lib(real_cc: str, work: Path) -> Path:
     lib = work / f"libpstrace{suffix}"
     cmd = [
         *shlex.split(real_cc),
-        "-shared", "-fPIC", "-O2",
+        "-shared", "-fPIC", "-O2", "-pthread",
         "-I", str(_INCLUDE), str(_HOOK_SRC),
         "-o", str(lib),
     ]

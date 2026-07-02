@@ -231,9 +231,11 @@ Semantics the consumer relies on:
 
 ## Limitations
 
-- **Same process / thread only.** Calls in a `subprocess` or a spawned thread
-  are not attributed (the conversation's known blind spot). Serial pytest is
-  assumed; the counter is not thread-safe.
+- **Threads are supported; subprocesses are not.** The hook keeps a per-thread
+  table and merges them at dump, so calls on threads a test spawns are recorded
+  (thread-safely) and attributed to the current test. Serial pytest is still
+  assumed for the *test* boundary. A `subprocess` is a separate address space and
+  is not attributed.
 - **`-O0` view.** Reflects un-inlined structure, slightly broader than an `-O2`
   build. Use `-O1` if you want closer-to-release call structure.
 - **Pre-test calls** (module import) land under a synthetic `(startup)` id.

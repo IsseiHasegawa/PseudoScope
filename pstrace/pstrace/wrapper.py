@@ -142,9 +142,10 @@ def build_command(lang: str, args: list[str]) -> list[str]:
             new_args += flags
         if is_shared_link and hook_obj and _link_wants_hook(args, hook_match):
             new_args.append(hook_obj)
-            # glibc < 2.34 keeps dladdr in libdl; harmless on newer glibc.
+            # The hook uses dladdr and pthreads; both live in libc on glibc >=2.34
+            # (so these are empty archives there) but older systems need them.
             if sys.platform.startswith("linux"):
-                new_args.append("-ldl")
+                new_args += ["-ldl", "-lpthread"]
 
     return real_argv + new_args
 
