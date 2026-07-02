@@ -55,6 +55,49 @@ def test_empty_name_raises(make_source):
         locate_function_body(src, "   ")
 
 
+def test_locates_function_after_multibyte_comment(make_source):
+    # A multi-byte comment before the function shifts byte offsets away from
+    # character offsets; the located range must still be correct.
+    content = "// \u00e9\u00e9\u00e9 \u00a9 \u20ac\nint add(int a, int b){ return a + b; }\n"
+    src = make_source(content, "m.c")
+
+    loc = locate_function_body(src, "add")
+
+    assert content[loc.opening_brace_index] == "{"
+    assert content[loc.closing_brace_index] == "}"
+    assert content[loc.body_start_index : loc.body_end_index].strip() == "return a + b;"
+    assert loc.start_line == 2
+
+
+def test_locates_function_after_earlier_multibyte_function(make_source):
+    content = (
+        'const char *greet(void){ return "caf\u00e9 \u20ac"; }\n'
+        "int add(int a, int b){ return a + b; }\n"
+    )
+    src = make_source(content, "m.c")
+
+    loc = locate_function_body(src, "add")
+
+    assert content[loc.opening_brace_index] == "{"
+    assert content[loc.closing_brace_index] == "}"
+    assert content[loc.body_start_index : loc.body_end_index].strip() == "return a + b;"
+    assert loc.start_line == 2
+
+
+def test_locates_function_with_multibyte_in_body(make_source):
+    content = 'const char *msg(void){ return "\u00e9\u20ac\U0001f600"; }\n'
+    src = make_source(content, "m.c")
+
+    loc = locate_function_body(src, "msg")
+
+    assert content[loc.opening_brace_index] == "{"
+    assert content[loc.closing_brace_index] == "}"
+    assert (
+        content[loc.body_start_index : loc.body_end_index].strip()
+        == 'return "\u00e9\u20ac\U0001f600";'
+    )
+
+
 def test_regex_fallback_for_unsupported_extension(make_source):
     # ".cu" is not a Tree-sitter suffix -> regex + brace-matching path.
     content = "int add(int a){ return a; }\n"

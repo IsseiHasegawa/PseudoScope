@@ -183,6 +183,27 @@ _STDBOOL_INCLUDE_PATTERN = re.compile(
 )
 
 
+def _has_top_level_marker(text: str, markers: str) -> bool:
+    """True if any character in ``markers`` appears at angle-bracket depth 0.
+
+    A ``*`` / ``&`` only makes a return type a pointer / reference when it sits
+    outside every ``<...>`` template argument: ``std::vector<int>*`` is a pointer,
+    but the ``*`` in ``std::vector<int*>`` (and the ``&`` in
+    ``std::function<void(int&)>``) belongs to a template argument and must not
+    reclassify the whole type. Depth is clamped at zero so a stray ``>`` cannot
+    drive it negative.
+    """
+    depth = 0
+    for char in text:
+        if char == "<":
+            depth += 1
+        elif char == ">":
+            depth = max(0, depth - 1)
+        elif depth == 0 and char in markers:
+            return True
+    return False
+
+
 def _infer_return_type_category(return_type: str) -> ReturnTypeCategory:
     normalized = _collapse_whitespace(return_type)
     lower = normalized.lower()
@@ -192,12 +213,15 @@ def _infer_return_type_category(return_type: str) -> ReturnTypeCategory:
     if "decltype(" in lower:
         return "unresolved"
 
-    # References: a '&' anywhere (incl. 'T*&' and rvalue 'T&&') means a reference
-    # return, which this operator excludes (no bindable default).
-    if "&" in normalized:
+    # References: a top-level '&' (incl. 'T*&' and rvalue 'T&&') means a reference
+    # return, which this operator excludes (no bindable default). A '&' inside a
+    # template argument (e.g. std::function<void(int&)>) is not a reference return.
+    if _has_top_level_marker(normalized, "&"):
         return "reference"
 
-    if "*" in normalized:
+    # A top-level '*' is a pointer return ('int *', 'std::vector<int>*'); a '*'
+    # only inside '<...>' (e.g. std::vector<int*>) is a template arg, not a pointer.
+    if _has_top_level_marker(normalized, "*"):
         return "pointer"
 
     # Bare 'auto' that survived trailing-return resolution cannot be deduced

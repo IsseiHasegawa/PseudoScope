@@ -10,10 +10,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from pseudoclang.source import SourceFile
 from pseudoclang.treesitter_util import (
     TreeSitterParseError,
+    build_byte_to_char,
     compound_statement_in_definition,
     function_names_match,
     index_to_line,
@@ -30,7 +32,12 @@ class FunctionLocateError(Exception):
 
 @dataclass(frozen=True)
 class FunctionBodyLocation:
-    """Byte and line range of a located function body inside source text."""
+    """Character and line range of a located function body inside source text.
+
+    Every ``*_index`` field is a character offset into ``source.content`` (the
+    decoded ``str``), not a UTF-8 byte offset, so downstream slicing in
+    ``mutate`` is correct for files containing multi-byte characters.
+    """
 
     function_name: str
     path: Path
@@ -49,13 +56,16 @@ def _location_from_compound_statement(
     source: SourceFile,
     function_name: str,
     *,
-    definition_start_index: int,
+    definition_start_byte: int,
     compound,
+    to_char: Callable[[int], int],
     return_type_spelling: str | None = None,
 ) -> FunctionBodyLocation:
     content = source.content
-    opening_brace_index = compound.start_byte
-    closing_brace_index = compound.end_byte - 1
+    # Tree-sitter reports UTF-8 byte offsets; convert to character offsets so
+    # they index the decoded ``str`` (a no-op for ASCII-only files).
+    opening_brace_index = to_char(compound.start_byte)
+    closing_brace_index = to_char(compound.end_byte - 1)
 
     if opening_brace_index >= len(content) or content[opening_brace_index] != "{":
         raise FunctionLocateError(
@@ -70,7 +80,7 @@ def _location_from_compound_statement(
 
     body_start_index = opening_brace_index + 1
     body_end_index = closing_brace_index
-    signature_start_index = line_start_index(content, definition_start_index)
+    signature_start_index = line_start_index(content, to_char(definition_start_byte))
 
     return FunctionBodyLocation(
         function_name=function_name,
@@ -96,6 +106,7 @@ def _locate_function_body_treesitter(
     except TreeSitterParseError as exc:
         raise FunctionLocateError(str(exc)) from exc
 
+    to_char = build_byte_to_char(source.content)
     located: list[FunctionBodyLocation] = []
     for item in definitions:
         if not function_names_match(function_name, item.name):
@@ -107,12 +118,10 @@ def _locate_function_body_treesitter(
             _location_from_compound_statement(
                 source,
                 function_name,
-                definition_start_index=item.node.start_byte,
+                definition_start_byte=item.node.start_byte,
                 compound=compound,
-                return_type_spelling=return_type_spelling_from_definition(
-                    item.node,
-                    source.content,
-                ),
+                to_char=to_char,
+                return_type_spelling=return_type_spelling_from_definition(item.node),
             )
         )
 

@@ -26,6 +26,17 @@ def test_discovers_bodied_functions_in_order(make_source):
     assert found[0].end_byte > found[0].start_byte
 
 
+def test_start_line_correct_after_multibyte_comment(make_source):
+    content = "// caf\u00e9 \u20ac\nint a(void){ return 1; }\nvoid b(void){ }\n"
+    src = make_source(content, "s.c")
+
+    found = discover_functions(src)
+
+    assert [f.name for f in found] == ["a", "b"]
+    assert found[0].start_line == 2
+    assert found[1].start_line == 3
+
+
 def test_discovers_nothing_in_headerless_data(make_source):
     src = make_source("static const int TABLE[] = {1, 2, 3};\n", "s.c")
     assert discover_functions(src) == []

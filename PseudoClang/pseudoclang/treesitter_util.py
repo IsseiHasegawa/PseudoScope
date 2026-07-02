@@ -6,8 +6,10 @@ Used by ``discover`` (list names) and ``locate`` (body byte ranges).
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from tree_sitter import Language, Node, Parser, Tree
 
@@ -94,6 +96,38 @@ def parse_source(source: SourceFile) -> Tree:
         ) from exc
 
 
+def build_byte_to_char(content: str) -> Callable[[int], int]:
+    """
+    Return a converter from UTF-8 byte offsets to ``content`` character indices.
+
+    Tree-sitter parses the UTF-8 encoding of the source, so its node
+    ``start_byte`` / ``end_byte`` are byte offsets, whereas the rest of the
+    pipeline indexes into the decoded ``str``. The two coincide only while every
+    preceding character is ASCII; a single multi-byte character (a non-ASCII
+    comment, an accented name, an emoji) shifts them apart.
+
+    For an all-ASCII file the identity mapping is returned so no table is built.
+    Otherwise a prefix table of per-character byte offsets is built once (O(n))
+    and each lookup is O(log n). Node boundaries always fall on character
+    boundaries, so every converted offset is exact.
+    """
+    if content.isascii():
+        return lambda byte_offset: byte_offset
+
+    # char_start_bytes[i] == byte offset at which character i begins;
+    # the final entry is the total byte length (maps an end-of-content offset).
+    char_start_bytes = [0]
+    total = 0
+    for char in content:
+        total += len(char.encode("utf-8"))
+        char_start_bytes.append(total)
+
+    def convert(byte_offset: int) -> int:
+        return bisect.bisect_left(char_start_bytes, byte_offset)
+
+    return convert
+
+
 def identifier_from_node(node: Node) -> str | None:
     if node.type in _IDENTIFIER_NODE_TYPES:
         text = node.text
@@ -173,12 +207,15 @@ def _declarator_suffix(declarator: Node) -> str:
     return suffix
 
 
-def return_type_spelling_from_definition(defn: Node, content: str) -> str | None:
+def return_type_spelling_from_definition(defn: Node) -> str | None:
     """
     Extract return-type source text from a ``function_definition`` node.
 
     Combines type children before the declarator with ``*`` / ``&`` from
-    ``pointer_declarator`` / ``reference_declarator`` chains.
+    ``pointer_declarator`` / ``reference_declarator`` chains. Each child's own
+    bytes are read via ``Node.text`` (not by slicing the ``str`` with byte
+    offsets), so the result is correct regardless of multi-byte characters
+    earlier in the file.
     """
     declarator = _top_level_declarator(defn)
     if declarator is None:
@@ -192,7 +229,7 @@ def return_type_spelling_from_definition(defn: Node, content: str) -> str | None
             continue
         if child is declarator:
             break
-        part = content[child.start_byte : child.end_byte].strip()
+        part = child.text.decode("utf-8").strip() if child.text is not None else ""
         if part:
             type_parts.append(part)
 

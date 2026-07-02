@@ -12,6 +12,7 @@ from pathlib import Path
 from pseudoclang.source import SourceFile
 from pseudoclang.treesitter_util import (
     TreeSitterParseError,
+    build_byte_to_char,
     index_to_line,
     parsed_function_definitions,
 )
@@ -25,7 +26,12 @@ class DiscoverError(Exception):
 
 @dataclass(frozen=True)
 class DiscoveredFunction:
-    """One function definition with a body, in source order."""
+    """One function definition with a body, in source order.
+
+    ``start_byte`` / ``end_byte`` are UTF-8 byte offsets (as reported by
+    Tree-sitter); convert them with :func:`build_byte_to_char` before using them
+    to index the decoded ``source.content`` ``str``.
+    """
 
     name: str
     start_line: int
@@ -56,9 +62,11 @@ def discover_functions(source: SourceFile) -> list[DiscoveredFunction]:
     except TreeSitterParseError as exc:
         raise DiscoverError(str(exc)) from exc
 
+    to_char = build_byte_to_char(source.content)
     discovered: list[DiscoveredFunction] = []
     for item in definitions:
-        start_line = index_to_line(source.content, item.node.start_byte)
+        # node.start_byte is a UTF-8 byte offset; convert before mapping to a line.
+        start_line = index_to_line(source.content, to_char(item.node.start_byte))
         discovered.append(
             DiscoveredFunction(
                 name=item.name,

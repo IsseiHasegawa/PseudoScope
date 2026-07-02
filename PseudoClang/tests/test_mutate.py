@@ -9,6 +9,7 @@ from pseudoclang.mutate import (
     MUTATION_TYPE_DEFAULT_RETURN,
     MutationError,
     UnsupportedReturnTypeError,
+    _infer_return_type_category,
     generate_default_return_mutations,
     replacement_return_line,
     resolve_return_type_category,
@@ -25,6 +26,25 @@ def _lines(src, loc):
         replacement_return_line(m.replacement_body)
         for m in generate_default_return_mutations(src, loc)
     }
+
+
+def test_mutation_correct_after_multibyte_comment(make_source):
+    # Byte offsets from Tree-sitter are shifted by the multi-byte comment; the
+    # replaced body and the surrounding text must still be exact, and restoring
+    # the original content must round-trip byte-for-byte.
+    content = "// caf\u00e9 \u00a9 na\u00efve\nint add(int a, int b){ return a + b; }\n"
+    src, loc = _locate(make_source, content, name="add")
+
+    mutations = generate_default_return_mutations(src, loc)
+
+    assert mutations
+    for mutation in mutations:
+        assert mutation.original_content == content
+        # The comment (and its multi-byte characters) is preserved verbatim.
+        assert mutation.mutated_content.startswith("// caf\u00e9 \u00a9 na\u00efve\n")
+        # Only the body between the braces changed; the signature is intact.
+        assert "int add(int a, int b){" in mutation.mutated_content
+        assert "return a + b;" not in mutation.mutated_content
 
 
 @pytest.mark.parametrize(
@@ -67,11 +87,45 @@ def test_category_inference_c(make_source, content, category):
         ("std::function<void()> f(){ return g; }", "fallback"),
         ("std::function<void(int)> f(){ return g; }", "fallback"),
         ("std::tuple<int> f(){ return t; }", "fallback"),
+        # A '*' / '&' inside a template argument belongs to that argument, not to
+        # the return type: these stay default-constructible aggregates ({}).
+        ("std::vector<int*> f(){ return v; }", "fallback"),
+        ("std::vector<char *> f(){ return v; }", "fallback"),
+        ("std::function<void(int*)> f(){ return g; }", "fallback"),
+        ("std::function<void(int&)> f(){ return g; }", "fallback"),
+        ("std::optional<char*> f(){ return o; }", "fallback"),
+        ("std::pair<int, char*> f(){ return p; }", "fallback"),
+        ("std::map<std::string, std::vector<int*>> f(){ return m; }", "fallback"),
+        # A top-level '*' after the closing '>' is still a real pointer return.
+        ("std::vector<int>* f(){ return p; }", "pointer"),
     ],
 )
 def test_category_inference_cpp(make_source, content, category):
     src, loc = _locate(make_source, content, filename="m.cpp")
     assert resolve_return_type_category(src, loc) == category
+
+
+def test_infer_category_ignores_markers_inside_template_args():
+    # Top-level '*' / '&' classify as pointer / reference.
+    assert _infer_return_type_category("int *") == "pointer"
+    assert _infer_return_type_category("std::vector<int>*") == "pointer"
+    assert _infer_return_type_category("const T&") == "reference"
+    assert _infer_return_type_category("int&&") == "reference"
+    assert _infer_return_type_category("T*&") == "reference"
+    # A '*' / '&' only inside '<...>' is a template argument, not a pointer/ref.
+    assert _infer_return_type_category("std::vector<int*>") == "fallback"
+    assert _infer_return_type_category("std::function<void(int&)>") == "fallback"
+    assert _infer_return_type_category("std::map<std::string, std::vector<int*>>") == "fallback"
+
+
+def test_stl_of_reference_is_mutated_not_excluded(make_source):
+    # Regression: std::function<void(int&)> was misread as a reference return and
+    # skipped entirely; the '&' is a template argument, so it must be mutated.
+    src, loc = _locate(
+        make_source, "std::function<void(int&)> f(){ return g; }", filename="m.cpp"
+    )
+    assert resolve_return_type_category(src, loc) == "fallback"
+    assert _lines(src, loc) == {"return {};"}
 
 
 # -- void --------------------------------------------------------------------

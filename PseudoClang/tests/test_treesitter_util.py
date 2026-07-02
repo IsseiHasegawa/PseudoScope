@@ -75,7 +75,36 @@ def test_parsed_function_definitions_empty_without_functions(make_source):
 def test_return_type_spelling_includes_type_and_pointer(make_source):
     src = make_source("static int *make_thing(void){ return 0; }\n")
     defs = ts.parsed_function_definitions(src)
-    spelling = ts.return_type_spelling_from_definition(defs[0].node, src.content)
+    spelling = ts.return_type_spelling_from_definition(defs[0].node)
+    assert spelling is not None
+    assert "int" in spelling
+    assert "*" in spelling
+
+
+def test_build_byte_to_char_identity_for_ascii():
+    convert = ts.build_byte_to_char("int f(void){ return 0; }")
+    for offset in (0, 4, 10, 24):
+        assert convert(offset) == offset
+
+
+def test_build_byte_to_char_maps_across_multibyte():
+    # 2-byte (U+00E9), 3-byte (U+20AC) and 4-byte (U+1F600) chars before the code.
+    content = "// \u00e9\u20ac\U0001f600\nint f(void){}"
+    encoded = content.encode("utf-8")
+    convert = ts.build_byte_to_char(content)
+    # A byte offset landing on the 'int' token converts back to its char index.
+    char_index = content.index("int")
+    byte_index = len(content[:char_index].encode("utf-8"))
+    assert byte_index != char_index  # multi-byte prefix really did shift it
+    assert convert(byte_index) == char_index
+    # End-of-content byte offset maps to len(content).
+    assert convert(len(encoded)) == len(content)
+
+
+def test_return_type_spelling_correct_after_multibyte_comment(make_source):
+    src = make_source("// caf\u00e9 \u20ac\nstatic int *thing(void){ return 0; }\n")
+    defs = ts.parsed_function_definitions(src)
+    spelling = ts.return_type_spelling_from_definition(defs[0].node)
     assert spelling is not None
     assert "int" in spelling
     assert "*" in spelling
