@@ -108,6 +108,31 @@ def _compile_hook(real_cc: str, work: Path) -> Path:
     return hook_obj
 
 
+def _build_hook_lib(real_cc: str, work: Path) -> Path:
+    """Build the hook as a standalone shared library for the preload path.
+
+    Linux resolves an instrumented ``.so``'s ``__cyg_profile_func_enter`` PLT
+    call through the global scope; a hook linked *into* the extension (loaded
+    ``RTLD_LOCAL`` by CPython) is never reached. Preloading a single
+    ``libpstrace`` puts the hook in the global scope so every instrumented
+    extension shares it (this also sidesteps the multi-`.so` state split).
+    """
+    suffix = ".dylib" if sys.platform == "darwin" else ".so"
+    lib = work / f"libpstrace{suffix}"
+    cmd = [
+        *shlex.split(real_cc),
+        "-shared", "-fPIC", "-O2",
+        "-I", str(_INCLUDE), str(_HOOK_SRC),
+        "-o", str(lib),
+    ]
+    if sys.platform.startswith("linux"):
+        cmd.append("-ldl")
+    proc = subprocess.run(cmd)
+    if proc.returncode != 0:
+        raise DriverError(f"failed to build the pstrace hook library: {' '.join(cmd)}")
+    return lib
+
+
 def _run(command: str, *, cwd: Path, env: dict[str, str], label: str) -> None:
     print(f"pstrace-driver: [{label}] $ {command}", file=sys.stderr)
     proc = subprocess.run(command, cwd=str(cwd), env=env, shell=True)
@@ -163,7 +188,15 @@ def main(argv: list[str] | None = None) -> int:
                     help="add the hook only to the shared library whose output "
                          "name contains this substring. Keeps a single hook "
                          "instance in a multi-extension project (default: every "
-                         "shared library).")
+                         "shared library). Ignored in preload mode.")
+    ap.add_argument("--hook-mode", choices=["auto", "link", "preload"], default="auto",
+                    help="how the hook reaches the extension. 'link' injects the "
+                         "hook object into the .so (works on macOS). 'preload' "
+                         "loads a shared libpstrace via LD_PRELOAD / "
+                         "DYLD_INSERT_LIBRARIES (required on Linux, where a linked "
+                         "hook is never reached, and it also handles "
+                         "multi-extension projects). 'auto' = preload on Linux, "
+                         "link elsewhere.")
     ap.add_argument("--test-dir",
                     help="working directory for the test command (default: the "
                          "project root). Set to a neutral directory when the "
@@ -198,8 +231,13 @@ def main(argv: list[str] | None = None) -> int:
     real_cc = args.real_cc or (cfg["CC"].split()[0] if cfg["CC"] else "cc")
     real_cxx = args.real_cxx or (cfg["CXX"].split()[0] if cfg["CXX"] else "c++")
 
+    use_preload = args.hook_mode == "preload" or (
+        args.hook_mode == "auto" and sys.platform.startswith("linux")
+    )
+
     try:
-        hook_obj = _compile_hook(real_cc, work)
+        hook_lib = _build_hook_lib(real_cc, work) if use_preload else None
+        hook_obj = None if use_preload else _compile_hook(real_cc, work)
     except DriverError as exc:
         print(f"pstrace-driver: {exc}", file=sys.stderr)
         return 1
@@ -211,11 +249,15 @@ def main(argv: list[str] | None = None) -> int:
     build_env.update(
         PSTRACE_REAL_CC=real_cc,
         PSTRACE_REAL_CXX=real_cxx,
-        PSTRACE_HOOK_OBJ=str(hook_obj),
         PSTRACE_INCLUDE=include_dirs,
         CC=str(_SHIM_CC),
         CXX=str(_SHIM_CXX),
     )
+    # Link mode injects the hook object into the .so; preload mode leaves
+    # __cyg_profile_func_enter undefined in the .so (resolved at load from the
+    # preloaded libpstrace), so the hook object is not passed to the wrapper.
+    if not use_preload:
+        build_env["PSTRACE_HOOK_OBJ"] = str(hook_obj)
     if args.flag:
         build_env["PSTRACE_EXTRA_FLAGS"] = " ".join(args.flag)
     if args.instrument_path:
@@ -244,10 +286,22 @@ def main(argv: list[str] | None = None) -> int:
     test_env["PYTEST_ADDOPTS"] = (addopts + " -p pstrace.plugin").strip()
     test_env["PSTRACE_OUTPUT"] = str(raw_tsv)
     test_env["PSTRACE_TESTS"] = str(tests_json)
-    if args.module:
-        test_env["PSTRACE_MODULE"] = args.module
-    if args.lib:
-        test_env["PSTRACE_LIB"] = args.lib
+    if use_preload:
+        # Put libpstrace in the global scope so instrumented extensions resolve
+        # the hook there, and point the plugin straight at it.
+        preload_var = "DYLD_INSERT_LIBRARIES" if sys.platform == "darwin" else "LD_PRELOAD"
+        existing_preload = test_env.get(preload_var, "")
+        test_env[preload_var] = (
+            f"{hook_lib}{os.pathsep}{existing_preload}" if existing_preload else str(hook_lib)
+        )
+        if sys.platform == "darwin":
+            test_env["DYLD_FORCE_FLAT_NAMESPACE"] = "1"
+        test_env["PSTRACE_LIB"] = str(hook_lib)
+    else:
+        if args.module:
+            test_env["PSTRACE_MODULE"] = args.module
+        if args.lib:
+            test_env["PSTRACE_LIB"] = args.lib
 
     try:
         _run(args.build_cmd, cwd=project_root, env=build_env, label="build")

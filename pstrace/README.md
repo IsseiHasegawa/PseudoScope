@@ -129,7 +129,8 @@ python -m pstrace.driver \
 | `--module` / `--lib` | importable module (or explicit `.so`) that exports the hook |
 | `--src-root` / `--project-root` | keep functions under this tree; make coverage keys relative to the root |
 | `--instrument-path SUB` | only instrument sources matching `SUB` (repeatable; default: all) |
-| `--hook-in SUB` | link the hook into only the `.so` whose name matches `SUB` |
+| `--hook-in SUB` | link the hook into only the `.so` whose name matches `SUB` (link mode) |
+| `--hook-mode` | `auto` (default) / `link` / `preload`; `auto` = preload on Linux, link on macOS |
 | `--test-dir DIR` | cwd for the test command (default: project root; set neutral for installed pkgs) |
 | `--keep-file BASENAME` | keep an extra source basename (e.g. Cython-generated `.c`) |
 
@@ -143,10 +144,14 @@ symbolizer (`atos` / `addr2line`) must find `-g` debug data:
   be **stripped** (scikit-build-core strips by default: `-Cinstall.strip=false`).
 
 Only Clang/GCC on Linux/macOS are supported (`-finstrument-functions` is not an
-MSVC feature). Instrumenting sources that land in **several** `.so`s at once would
-need a single shared hook (an `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES` build of the
-hook) rather than link injection; today keep instrumented code to one extension
-with `--instrument-path` + `--hook-in`.
+MSVC feature). The hook reaches the extension one of two ways (`--hook-mode`,
+default `auto`): **link injection** builds the hook into the `.so`, while
+**preload** loads a shared `libpstrace` via `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES`.
+Linux requires preload (a hook linked into a CPython extension is loaded
+`RTLD_LOCAL` and its `__cyg_profile_func_enter` is never reached), so `auto`
+selects preload there and link injection on macOS. Preload also shares one hook
+across **several** instrumented `.so`s, so it is the way to instrument more than
+one extension at once.
 
 ## Run
 
