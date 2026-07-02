@@ -19,6 +19,7 @@ import sys
 
 from pseudoclang.coverage_map import CoverageMap
 from pseudoclang.models import PseudoScopeConfig
+from pseudoclang.restore_backstop import guarded_source_write
 from pseudoclang.runner import TestRunError, run_selected_test_command
 
 #: Prepended to the target source. ``#error`` is a preprocessor directive that
@@ -55,18 +56,16 @@ def check_test_runner_rebuilds(
 
     target = config.target_file
     original = target.read_text(encoding="utf-8")
+    # guarded_source_write restores the file on normal completion, exception, and
+    # Ctrl-C, and via the shared backstop on SIGTERM / abnormal exit, so the
+    # canary can never be left in the target source.
     try:
-        # finally-restore covers normal completion, failure, and Ctrl-C; the
-        # window (one build + test) is short.
-        target.write_text(_CANARY + original, encoding="utf-8")
-        try:
+        with guarded_source_write(target, _CANARY + original, original):
             result = run_selected_test_command(config, selection)
-        except TestRunError as exc:
-            raise PreflightError(
-                f"Could not run --test-runner-template for the rebuild check: {exc}"
-            ) from exc
-    finally:
-        target.write_text(original, encoding="utf-8")
+    except TestRunError as exc:
+        raise PreflightError(
+            f"Could not run --test-runner-template for the rebuild check: {exc}"
+        ) from exc
 
     template_passed = (not result.timed_out) and result.exit_code == 0
     if template_passed:

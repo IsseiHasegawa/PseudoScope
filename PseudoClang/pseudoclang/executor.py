@@ -2,8 +2,10 @@
 Execute mutation tests: write, run tests, restore (Step 7).
 
 Each mutation is applied to disk, tested, and reverted in a ``finally`` block
-so the source file is never left mutated. Does not write JSON or classify
-pseudo-tested functions.
+so the source file is never left mutated. A SIGTERM handler and an ``atexit``
+hook back-stop that restore if the process is terminated mid-test (SIGKILL and
+power loss remain unrecoverable). Does not write JSON or classify pseudo-tested
+functions.
 """
 
 from __future__ import annotations
@@ -14,6 +16,15 @@ from dataclasses import dataclass
 from pseudoclang.coverage_map import ExecutionPlan, PlanKind
 from pseudoclang.models import PseudoScopeConfig
 from pseudoclang.mutate import MutatedSource
+# Re-export _PENDING_RESTORES / _restore_pending_sources so existing importers
+# (and tests) keep working now that the backstop lives in its own module.
+from pseudoclang.restore_backstop import (  # noqa: F401
+    _PENDING_RESTORES,
+    _restore_pending_sources,
+    install_backstop,
+    register,
+    unregister,
+)
 from pseudoclang.runner import (
     TestRunError,
     TestRunResult,
@@ -186,6 +197,7 @@ def run_single_mutation_test(
     :class:`MutationExecutionError` on write, test start, or restore failure.
     Restore failures use a message marked as critical.
     """
+    install_backstop()
     written = False
     restored = False
     test_result: TestRunResult | None = None
@@ -197,6 +209,7 @@ def run_single_mutation_test(
         try:
             write_mutated_source(mutation, encoding=encoding)
             written = True
+            register(mutation.path, mutation.original_content)
         except WorkspaceError as exc:
             raise MutationExecutionError(
                 f"Failed to write mutated source for {mutation.function_name} "
@@ -226,6 +239,8 @@ def run_single_mutation_test(
                     f"{mutation.path} after testing {mutation.function_name}. "
                     f"The file may still be mutated on disk: {exc}"
                 ) from exc
+            finally:
+                unregister(mutation.path)
 
     if test_result is None:
         raise MutationExecutionError(

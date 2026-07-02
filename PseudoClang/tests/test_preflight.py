@@ -59,6 +59,32 @@ def test_noop_when_map_has_no_tests(tmp_path):
     check_test_runner_rebuilds(cfg, _map([]))  # nothing to probe -> no raise
 
 
+def test_registers_with_backstop_during_the_template_run(tmp_path, monkeypatch):
+    # While the template runs, the canary is on disk AND registered with the
+    # SIGTERM/atexit backstop; afterwards the source is restored and unregistered.
+    from pseudoclang import restore_backstop
+    from pseudoclang.runner import TestRunResult
+
+    cfg = _config(tmp_path, "irrelevant  # {selection}")
+    seen: dict = {}
+
+    def fake_run(config, nodeids):
+        seen["registered"] = config.target_file in restore_backstop._PENDING_RESTORES
+        seen["content"] = config.target_file.read_text(encoding="utf-8")
+        return TestRunResult(
+            test_command="x", project_root=str(tmp_path), exit_code=1,
+            stdout="", stderr="", runtime_seconds=0.0, timed_out=False,
+        )
+
+    monkeypatch.setattr("pseudoclang.preflight.run_selected_test_command", fake_run)
+    check_test_runner_rebuilds(cfg, _map(["t1"]))  # exit 1 -> not the footgun
+
+    assert seen["registered"] is True
+    assert "pstrace_template_rebuild_check" in seen["content"]  # canary was on disk
+    assert cfg.target_file.read_text(encoding="utf-8") == "int f(void){ return 0; }\n"
+    assert cfg.target_file not in restore_backstop._PENDING_RESTORES
+
+
 def test_restores_source_even_when_template_errors(tmp_path):
     # A template that cannot start still leaves the source restored.
     cfg = _config(tmp_path, "this_command_does_not_exist_zzz {selection}")
