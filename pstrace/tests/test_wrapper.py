@@ -70,3 +70,19 @@ def test_flags_are_overridable(monkeypatch):
     monkeypatch.setenv("PSTRACE_FLAGS", "-finstrument-functions -O1")
     out = build_command("c", ["-c", "a.c", "-o", "a.o"])
     assert "-O1" in out and "-O0" not in out
+
+
+def test_target_allowlist_instruments_only_matching_sources(monkeypatch):
+    monkeypatch.setenv("PSTRACE_TARGET", "src/multiarray")
+    inside = build_command("c", ["-c", "../numpy/_core/src/multiarray/item.c", "-o", "item.o"])
+    outside = build_command("c", ["-c", "../numpy/_core/src/umath/loops.c", "-o", "loops.o"])
+    assert "-finstrument-functions" in inside
+    assert "-finstrument-functions" not in outside  # built normally
+
+
+def test_hook_link_match_limits_hook_to_one_extension(monkeypatch):
+    monkeypatch.setenv("PSTRACE_HOOK_LINK_MATCH", "_multiarray_umath")
+    hooked = build_command("c", ["-bundle", "a.o", "-o", "_multiarray_umath.cpython-314.so"])
+    other = build_command("c", ["-bundle", "b.o", "-o", "_umath_tests.cpython-314.so"])
+    assert "/hook.o" in hooked
+    assert "/hook.o" not in other  # avoids a second hook copy that splits state

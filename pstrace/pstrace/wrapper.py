@@ -15,6 +15,14 @@ Configured entirely through the environment, so any build system that honours
   PSTRACE_INCLUDE                     os.pathsep-joined extra include dirs
   PSTRACE_FLAGS                       instrumentation flags (default: DEFAULT_FLAGS)
   PSTRACE_EXTRA_FLAGS                 extra flags appended verbatim
+  PSTRACE_TARGET                      os.pathsep-joined path substrings; when set,
+                                      only sources whose path matches one of them
+                                      are instrumented (the rest build normally)
+  PSTRACE_HOOK_LINK_MATCH            only add the hook to a shared-lib link whose
+                                      output name contains this substring; keeps a
+                                      single hook instance in a multi-extension
+                                      project (empty = every shared link, the
+                                      default for single-extension targets)
   PSTRACE_DEBUG                       if set, log the rewritten command to stderr
 
 Configure-time try-compile/link probes (Meson ``meson-private``, CMake scratch
@@ -62,6 +70,44 @@ def _looks_like_check(args: list[str]) -> bool:
     return any(marker in a for a in args for marker in _CHECK_MARKERS)
 
 
+def _source_args(args: list[str]) -> list[str]:
+    return [a for a in args if a.endswith(_SRC_EXTS)]
+
+
+def _instruments_these_sources(args: list[str], targets: list[str]) -> bool:
+    """Whether this compile's source(s) should be instrumented under ``targets``.
+
+    An empty ``targets`` means "instrument everything" (the default). Otherwise a
+    source is instrumented only when its path contains one of the target
+    substrings, so a large project can be built normally except for the subtree
+    under analysis.
+    """
+    if not targets:
+        return True
+    return any(t in s for s in _source_args(args) for t in targets)
+
+
+def _output_path(args: list[str]) -> str | None:
+    for i, a in enumerate(args):
+        if a == "-o" and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def _link_wants_hook(args: list[str], hook_match: str) -> bool:
+    """Whether this shared link should receive the hook object.
+
+    With no ``hook_match`` every shared link gets it (correct for a single
+    extension). With a match, only the link whose ``-o`` output contains the
+    substring does, so the hook is defined exactly once in a multi-extension
+    project instead of once per ``.so`` (which would split the trace state).
+    """
+    if not hook_match:
+        return True
+    out = _output_path(args)
+    return out is not None and hook_match in out
+
+
 def build_command(lang: str, args: list[str]) -> list[str]:
     """Return the full argv (real compiler + rewritten args) for ``args``.
 
@@ -77,6 +123,8 @@ def build_command(lang: str, args: list[str]) -> list[str]:
     flags += shlex.split(os.environ.get("PSTRACE_EXTRA_FLAGS", ""))
     includes = _split_paths("PSTRACE_INCLUDE")
     hook_obj = os.environ.get("PSTRACE_HOOK_OBJ", "")
+    targets = _split_paths("PSTRACE_TARGET")
+    hook_match = os.environ.get("PSTRACE_HOOK_LINK_MATCH", "")
 
     new_args = list(args)
 
@@ -88,11 +136,11 @@ def build_command(lang: str, args: list[str]) -> list[str]:
     compiles_source = is_object_compile or (is_shared_link and has_source)
 
     if (is_object_compile or is_shared_link) and not _looks_like_check(args):
-        if compiles_source:
+        if compiles_source and _instruments_these_sources(args, targets):
             for inc in includes:
                 new_args += ["-I", inc]
             new_args += flags
-        if is_shared_link and hook_obj:
+        if is_shared_link and hook_obj and _link_wants_hook(args, hook_match):
             new_args.append(hook_obj)
             # glibc < 2.34 keeps dladdr in libdl; harmless on newer glibc.
             if sys.platform.startswith("linux"):

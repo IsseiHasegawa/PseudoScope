@@ -140,6 +140,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="extra include dir for instrumented sources (repeatable)")
     ap.add_argument("--flag", action="append", default=[],
                     help="extra compile flag appended verbatim (repeatable)")
+    ap.add_argument("--instrument-path", action="append", default=[],
+                    help="only instrument sources whose path contains this "
+                         "substring (repeatable; default: instrument everything). "
+                         "Use in large projects to limit -O0 instrumentation and "
+                         "keep instrumented code in one extension.")
+    ap.add_argument("--hook-in",
+                    help="add the hook only to the shared library whose output "
+                         "name contains this substring. Keeps a single hook "
+                         "instance in a multi-extension project (default: every "
+                         "shared library).")
     ap.add_argument("--work-dir", help="keep artifacts here (default: a temp dir)")
     args = ap.parse_args(argv)
 
@@ -181,6 +191,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.flag:
         build_env["PSTRACE_EXTRA_FLAGS"] = " ".join(args.flag)
+    if args.instrument_path:
+        build_env["PSTRACE_TARGET"] = os.pathsep.join(args.instrument_path)
+    if args.hook_in:
+        build_env["PSTRACE_HOOK_LINK_MATCH"] = args.hook_in
     # setuptools links via LDSHARED, not CC; Meson/CMake ignore these harmlessly.
     if cfg["LDSHARED"]:
         build_env["LDSHARED"] = _swap_launcher(cfg["LDSHARED"], _SHIM_CC)
