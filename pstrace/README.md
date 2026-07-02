@@ -83,6 +83,71 @@ To get an ordinary, un-instrumented build back, just run the target's own
 > bundled C++ deps (e.g. double-conversion) get instrumented too. They are
 > removed later by the source filter, not at compile time. Cost is negligible.
 
+## Any build system: the pstrace driver
+
+`pstrace.build` only works with setuptools. For everything else, `pstrace.driver`
+does the whole run (build → traced pytest → coverage map) against **any build
+system that honors `CC` / `CXX`**: setuptools, Meson / meson-python, CMake /
+scikit-build-core, autotools. It points the toolchain at a compiler wrapper
+(`pstrace-cc` / `pstrace-cxx`) that appends `-finstrument-functions -O0 -g` to
+compiles and links the hook object into the extension. Build-system probe
+compiles (Meson `meson-private`, CMake scratch dirs, distutils `_configtest`) and
+executable links are passed through untouched, so compiler detection keeps
+working.
+
+```bash
+# setuptools (inplace build: importable from the project cwd)
+python -m pstrace.driver \
+  --project-root ultrajson --python ultrajson/.venv/bin/python \
+  --module ujson --src-root ultrajson/src/ujson \
+  --build-cmd "python setup.py build_ext --inplace --force" \
+  --test-cmd  "python -m pytest tests/" \
+  --coverage-json coverage.json
+
+# Meson / meson-python (large, multi-extension): instrument one subtree, keep the
+# hook in one .so, run tests from a neutral cwd because the package is installed.
+python -m pstrace.driver \
+  --project-root numpy --python .venv/bin/python \
+  --module numpy._core._multiarray_umath \
+  --src-root numpy/numpy/_core/src/multiarray \
+  --instrument-path src/multiarray --hook-in _multiarray_umath \
+  --build-cmd "pip install -e . --no-build-isolation -Csetup-args=-Dallow-noblas=true" \
+  --test-cmd  "python -m pytest --pyargs numpy._core.tests.test_multiarray" \
+  --test-dir /tmp --coverage-json coverage.json
+
+# CMake / scikit-build-core: disable install stripping so symbols survive.
+python -m pstrace.driver \
+  --project-root pkg --python .venv/bin/python \
+  --module pkg._core --src-root pkg \
+  --build-cmd "pip install -e . --no-build-isolation -Cinstall.strip=false" \
+  --test-cmd  "python -m pytest tests/" --test-dir /tmp --coverage-json coverage.json
+```
+
+| Driver flag | Meaning |
+|---|---|
+| `--build-cmd` / `--test-cmd` | shell commands for a clean rebuild and the pytest run |
+| `--module` / `--lib` | importable module (or explicit `.so`) that exports the hook |
+| `--src-root` / `--project-root` | keep functions under this tree; make coverage keys relative to the root |
+| `--instrument-path SUB` | only instrument sources matching `SUB` (repeatable; default: all) |
+| `--hook-in SUB` | link the hook into only the `.so` whose name matches `SUB` |
+| `--test-dir DIR` | cwd for the test command (default: project root; set neutral for installed pkgs) |
+| `--keep-file BASENAME` | keep an extra source basename (e.g. Cython-generated `.c`) |
+
+**Symbolization needs the build to leave debug info reachable.** The offline
+symbolizer (`atos` / `addr2line`) must find `-g` debug data:
+
+- **Linux** embeds DWARF in the `.so`; nothing extra is needed.
+- **macOS** keeps DWARF in the `.o` files and references them from the `.so`, so
+  the object files must survive the build (use an **editable** install, not a
+  throwaway `pip install .` that deletes its build dir) and the binary must not
+  be **stripped** (scikit-build-core strips by default: `-Cinstall.strip=false`).
+
+Only Clang/GCC on Linux/macOS are supported (`-finstrument-functions` is not an
+MSVC feature). Instrumenting sources that land in **several** `.so`s at once would
+need a single shared hook (an `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES` build of the
+hook) rather than link injection; today keep instrumented code to one extension
+with `--instrument-path` + `--hook-in`.
+
 ## Run
 
 ```bash
