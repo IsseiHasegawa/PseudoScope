@@ -234,6 +234,12 @@ def main(argv: list[str] | None = None) -> int:
     use_preload = args.hook_mode == "preload" or (
         args.hook_mode == "auto" and sys.platform.startswith("linux")
     )
+    if use_preload and sys.platform == "darwin":
+        print("pstrace-driver: warning: preload on macOS relies on "
+              "DYLD_INSERT_LIBRARIES, which System Integrity Protection strips when "
+              "the shell-run test command execs a protected binary, so the hook may "
+              "never load. Use --hook-mode link on macOS (single extension).",
+              file=sys.stderr)
 
     try:
         hook_lib = _build_hook_lib(real_cc, work) if use_preload else None

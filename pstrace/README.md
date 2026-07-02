@@ -151,7 +151,11 @@ Linux requires preload (a hook linked into a CPython extension is loaded
 `RTLD_LOCAL` and its `__cyg_profile_func_enter` is never reached), so `auto`
 selects preload there and link injection on macOS. Preload also shares one hook
 across **several** instrumented `.so`s, so it is the way to instrument more than
-one extension at once.
+one extension at once. That path is **Linux-only**: on macOS System Integrity
+Protection strips `DYLD_INSERT_LIBRARIES` when the shell-run test command execs a
+protected binary, so preload cannot inject the hook. macOS is therefore limited to
+link injection (one extension per run, selected with `--instrument-path` /
+`--hook-in`); instrumenting several extensions at once needs Linux.
 
 ## Run
 
