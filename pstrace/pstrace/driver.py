@@ -13,7 +13,7 @@ It makes no assumptions about the build system: setuptools, Meson, CMake and
 autotools all honour ``CC`` / ``CXX``. Point PseudoClang's ``--coverage-map-cmd``
 at an invocation of this module.
 
-Example (setuptools target)::
+setuptools (inplace build; the extension is importable from the project cwd)::
 
     python -m pstrace.driver \
         --project-root ultrajson --python ultrajson/.venv/bin/python \
@@ -22,8 +22,22 @@ Example (setuptools target)::
         --test-cmd  "python -m pytest tests/" \
         --coverage-json coverage.json
 
-For a Meson / meson-python target the only change is the build command, e.g.
-``--build-cmd "pip install -e . --no-build-isolation --force-reinstall"``.
+Meson / meson-python (large, multi-extension). Use an *editable* install so the
+object files survive for symbolization (on macOS DWARF lives in the ``.o`` files;
+a non-editable ``pip install .`` deletes its ephemeral build dir and ``atos`` can
+no longer recover file:line). ``--instrument-path`` limits -O0 instrumentation to
+one subtree and ``--hook-in`` keeps a single hook instance; ``--test-dir`` runs
+the tests from a neutral cwd so the source tree does not shadow the installed
+package::
+
+    python -m pstrace.driver \
+        --project-root numpy --python .venv/bin/python \
+        --module numpy._core._multiarray_umath \
+        --src-root numpy/numpy/_core/src/multiarray \
+        --instrument-path src/multiarray --hook-in _multiarray_umath \
+        --build-cmd "pip install -e . --no-build-isolation -Csetup-args=-Dallow-noblas=true" \
+        --test-cmd  "python -m pytest --pyargs numpy._core.tests.test_multiarray" \
+        --test-dir /tmp --coverage-json coverage.json
 """
 
 from __future__ import annotations
@@ -150,12 +164,25 @@ def main(argv: list[str] | None = None) -> int:
                          "name contains this substring. Keeps a single hook "
                          "instance in a multi-extension project (default: every "
                          "shared library).")
+    ap.add_argument("--test-dir",
+                    help="working directory for the test command (default: the "
+                         "project root). Set to a neutral directory when the "
+                         "extension is installed rather than built inplace (e.g. "
+                         "meson-python), so the source tree does not shadow the "
+                         "installed package via the test's cwd.")
+    ap.add_argument("--keep-file", action="append", default=[],
+                    help="extra source basename to keep in the coverage map "
+                         "(repeatable); forwarded to the report. Useful for "
+                         "Cython-generated .c files that live outside --src-root.")
     ap.add_argument("--work-dir", help="keep artifacts here (default: a temp dir)")
     args = ap.parse_args(argv)
 
     project_root = Path(args.project_root).resolve()
     if not project_root.is_dir():
         ap.error(f"--project-root is not a directory: {project_root}")
+    test_cwd = Path(args.test_dir).resolve() if args.test_dir else project_root
+    if not test_cwd.is_dir():
+        ap.error(f"--test-dir is not a directory: {test_cwd}")
     if not _HOOK_SRC.is_file():
         ap.error(f"hook source missing: {_HOOK_SRC}")
 
@@ -232,8 +259,8 @@ def main(argv: list[str] | None = None) -> int:
     # tests from the coverage universe anyway, and a run with a few red tests
     # still yields a valid trace. A hard error (e.g. pytest missing) instead
     # produces no trace and is caught by the raw-trace check below.
-    print(f"pstrace-driver: [test] $ {args.test_cmd}", file=sys.stderr)
-    test_proc = subprocess.run(args.test_cmd, cwd=str(project_root), env=test_env, shell=True)
+    print(f"pstrace-driver: [test] $ {args.test_cmd}  (cwd={test_cwd})", file=sys.stderr)
+    test_proc = subprocess.run(args.test_cmd, cwd=str(test_cwd), env=test_env, shell=True)
     if test_proc.returncode != 0:
         print(f"pstrace-driver: test command exited {test_proc.returncode} "
               "(continuing; only passing tests are kept in the coverage map)",
@@ -256,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
         "--tests", str(tests_json),
         "--coverage-json", str(Path(args.coverage_json).resolve()),
     ]
+    for keep in args.keep_file:
+        report_cmd += ["--keep-file", keep]
     print(f"pstrace-driver: [report] $ {' '.join(shlex.quote(c) for c in report_cmd)}",
           file=sys.stderr)
     proc = subprocess.run(report_cmd, env=report_env)
