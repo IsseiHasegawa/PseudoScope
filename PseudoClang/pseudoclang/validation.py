@@ -52,6 +52,16 @@ def normalize_relative_file_path(file: str) -> Path:
 DEFAULT_OUTPUT_FILE = "pseudoclang-results.json"
 
 
+def default_output_dir() -> Path:
+    """PseudoClang's own output directory: ``<pseudoclang-repo>/output``.
+
+    Outputs default here (not the target project) so a run leaves the target
+    project's tree byte-identical. This file lives at
+    ``<repo>/pseudoclang/validation.py``; ``parents[1]`` is the repo root.
+    """
+    return (Path(__file__).resolve().parents[1] / "output").resolve()
+
+
 def resolve_output_path(
     *,
     output_dir: str | None,
@@ -65,7 +75,9 @@ def resolve_output_path(
         raise ConfigError("--output-file must be a valid file name.")
 
     if output_dir is None or not output_dir.strip():
-        parent = project_root
+        # Default under PseudoClang, not the target project, so the target
+        # stays original. An explicit --output-dir still resolves below.
+        parent = default_output_dir()
     else:
         dir_path = Path(output_dir.strip()).expanduser()
         parent = dir_path.resolve() if dir_path.is_absolute() else (
@@ -279,7 +291,9 @@ def build_config(
             hook_mode=pstrace_hook_mode,
         )
         if coverage_map_path is None:
-            coverage_map_path = (root / ".pseudoclang" / "coverage-map.json").resolve()
+            # Default under PseudoClang, not the target project. pstrace writes
+            # here via $PSEUDOCLANG_COVERAGE_MAP; PseudoClang reads it back.
+            coverage_map_path = (default_output_dir() / "coverage-map.json").resolve()
 
     template_value = validate_selection_options(
         coverage_map_path=coverage_map_path,

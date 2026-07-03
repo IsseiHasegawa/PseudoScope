@@ -53,6 +53,9 @@ from pathlib import Path
 
 _PKG_DIR = Path(__file__).resolve().parent  # <repo>/pstrace/pstrace
 _REPO = _PKG_DIR.parent  # <repo>/pstrace (the dir that contains the package)
+# Default output lives under pstrace itself, not the target project, so a run
+# leaves the target project's tree untouched.
+_DEFAULT_OUTPUT_DIR = _REPO / "output"
 _HOOK_SRC = _REPO / "src" / "pstrace_hook.c"
 _INCLUDE = _REPO / "include"
 _SHIM_CC = _PKG_DIR / "pstrace-cc"
@@ -165,8 +168,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="shell command that performs a clean, forced rebuild")
     ap.add_argument("--test-cmd", required=True,
                     help="shell command that runs the pytest suite")
-    ap.add_argument("--coverage-json", required=True,
-                    help="output path for the pstrace-coverage/1 map")
+    ap.add_argument("--coverage-json", default=None,
+                    help="output path for the pstrace-coverage/1 map "
+                         "(default: pstrace's own output/coverage.json, so the "
+                         "target project is left untouched)")
     ap.add_argument("--src-root", required=True,
                     help="keep only functions defined under this source tree")
     group = ap.add_mutually_exclusive_group(required=True)
@@ -222,6 +227,12 @@ def main(argv: list[str] | None = None) -> int:
 
     work = Path(args.work_dir).resolve() if args.work_dir else Path(tempfile.mkdtemp(prefix="pstrace-"))
     work.mkdir(parents=True, exist_ok=True)
+
+    coverage_json = (
+        Path(args.coverage_json).resolve() if args.coverage_json
+        else (_DEFAULT_OUTPUT_DIR / "coverage.json").resolve()
+    )
+    coverage_json.parent.mkdir(parents=True, exist_ok=True)
 
     # Do not resolve symlinks: a venv's ``bin/python`` symlinks to the base
     # interpreter, and we want the venv's own bin dir on PATH so bare ``python``
@@ -342,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         "--src-root", str(Path(args.src_root).resolve()),
         "--project-root", str(project_root),
         "--tests", str(tests_json),
-        "--coverage-json", str(Path(args.coverage_json).resolve()),
+        "--coverage-json", str(coverage_json),
     ]
     for keep in args.keep_file:
         report_cmd += ["--keep-file", keep]
@@ -353,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         print("pstrace-driver: report failed", file=sys.stderr)
         return 1
 
-    print(f"pstrace-driver: done -> {Path(args.coverage_json).resolve()}", file=sys.stderr)
+    print(f"pstrace-driver: done -> {coverage_json}", file=sys.stderr)
     print(f"pstrace-driver: artifacts in {work}", file=sys.stderr)
     return 0
 

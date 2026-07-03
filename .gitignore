@@ -12,6 +12,10 @@ dist/
 **/.pseudoscope/backups/
 **/*.pseudoscope-sweep.partial
 
+# Tool outputs (each tool writes under its own output/ so targets stay clean)
+PseudoClang/output/
+pstrace/output/
+
 .venv/
 benchmark/.venv/
 benchmark/pseudoscope-results.json

@@ -79,10 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m pseudoclang \\\n"
             "    --project-root-source-dir ultrajson \\\n"
             "    --file src/ujson/python/objToJSON.c \\\n"
-            "    --test-command \"source .venv/bin/activate && pip install -e . && pytest\" \\\n"
-            "    --output-dir . \\\n"
-            "    --output-file results.json\n"
+            "    --test-command \"source .venv/bin/activate && pip install -e . && pytest\"\n"
             "\n"
+            "Results default to PseudoClang's own output/ directory (the target "
+            "project is left untouched); pass --output-dir/--output-file to "
+            "redirect.\n"
             "Optional: --file, --output-file, --timeout (default 60), "
             "--mode, --lang (stubs for future use)."
         ),
@@ -114,7 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "Directory to save output JSON. Relative paths resolve under "
-            "--project-root-source-dir (default: project root)."
+            "--project-root-source-dir. Default: PseudoClang's own output/ "
+            "directory (keeps the target project untouched)."
         ),
     )
     parser.add_argument(
@@ -164,7 +166,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "pstrace coverage-map JSON (pstrace-coverage/1). When given, each "
             "function's mutants run only the tests that exercise it, falling "
-            "back to --test-command when the map cannot answer."
+            "back to --test-command when the map cannot answer. With "
+            "--pstrace-module and no explicit path, defaults to PseudoClang's "
+            "own output/coverage-map.json (keeps the target project untouched)."
         ),
     )
     parser.add_argument(

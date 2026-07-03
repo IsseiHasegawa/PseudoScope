@@ -9,7 +9,7 @@ from pseudoclang.pstrace_integration import (
     build_pstrace_coverage_map_cmd,
     default_pstrace_repo,
 )
-from pseudoclang.validation import build_config
+from pseudoclang.validation import build_config, default_output_dir
 
 
 def _bc(tmp_path, **kw):
@@ -70,6 +70,9 @@ def test_build_config_sets_cmd_and_defaults_map_path(tmp_path):
     assert cfg.coverage_map_cmd and "pstrace.driver" in cfg.coverage_map_cmd
     assert cfg.coverage_map_path is not None  # defaulted since --coverage-map omitted
     assert cfg.coverage_map_path.name == "coverage-map.json"
+    # The default map lives under PseudoClang, never inside the target project.
+    assert cfg.coverage_map_path.parent == default_output_dir()
+    assert tmp_path not in cfg.coverage_map_path.parents
 
 
 def test_build_config_requires_subflags(tmp_path):
