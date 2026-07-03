@@ -233,14 +233,16 @@ def run_single_mutation_test(
             try:
                 restore_original_source(mutation, encoding=encoding)
                 restored = True
+                # Unregister only after a successful restore. On failure (or a
+                # KeyboardInterrupt mid-write) the path stays registered so the
+                # atexit / SIGTERM backstop can retry the restore at exit.
+                unregister(mutation.path)
             except WorkspaceError as exc:
                 raise MutationExecutionError(
                     f"CRITICAL: Failed to restore original source at "
                     f"{mutation.path} after testing {mutation.function_name}. "
                     f"The file may still be mutated on disk: {exc}"
                 ) from exc
-            finally:
-                unregister(mutation.path)
 
     if test_result is None:
         raise MutationExecutionError(

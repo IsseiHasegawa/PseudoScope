@@ -34,7 +34,11 @@ def write_mutated_source(
     file is not left mutated on disk after the program exits.
     """
     try:
-        mutation.path.write_text(mutation.mutated_content, encoding=encoding)
+        # newline="" so we write bytes as-is (no LF -> os.linesep translation),
+        # keeping a CRLF file's endings intact through the mutate/restore cycle.
+        mutation.path.write_text(
+            mutation.mutated_content, encoding=encoding, newline=""
+        )
     except OSError as exc:
         raise WorkspaceError(
             f"Failed to write mutated source to {mutation.path}: {exc}"
@@ -52,7 +56,9 @@ def restore_original_source(
     Use after :func:`write_mutated_source`, typically in a ``finally`` block.
     """
     try:
-        mutation.path.write_text(mutation.original_content, encoding=encoding)
+        mutation.path.write_text(
+            mutation.original_content, encoding=encoding, newline=""
+        )
     except OSError as exc:
         raise WorkspaceError(
             f"Failed to restore original source at {mutation.path}: {exc}"

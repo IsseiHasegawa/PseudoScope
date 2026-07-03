@@ -45,7 +45,11 @@ def read_source_file(
     path = config.target_file
 
     try:
-        content = path.read_text(encoding=encoding)
+        # newline="" disables universal-newline translation so CRLF / lone-CR
+        # bytes survive read -> mutate -> restore unchanged (byte-identical
+        # restore). read_text has no newline kwarg before 3.13, so use open().
+        with open(path, "r", encoding=encoding, newline="") as handle:
+            content = handle.read()
     except UnicodeDecodeError as exc:
         raise SourceReadError(
             f"Could not decode {path} as {encoding}: {exc}"

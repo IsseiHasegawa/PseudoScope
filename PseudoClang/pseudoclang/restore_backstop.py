@@ -28,9 +28,9 @@ def _restore_pending_sources() -> None:
     """Best-effort restore of every source still edited on disk (signal / atexit)."""
     for path, original in list(_PENDING_RESTORES.items()):
         try:
-            path.write_text(original, encoding="utf-8")
+            path.write_text(original, encoding="utf-8", newline="")
         except OSError:  # pragma: no cover - disk error during emergency restore
-            pass
+            continue  # keep it registered so a later retry can still restore
         _PENDING_RESTORES.pop(path, None)
 
 
@@ -76,12 +76,13 @@ def guarded_source_write(
     registry covers ``SIGTERM`` and abnormal exit.
     """
     install_backstop()
-    path.write_text(new_content, encoding=encoding)
+    path.write_text(new_content, encoding=encoding, newline="")
     register(path, original_content)
     try:
         yield
     finally:
-        try:
-            path.write_text(original_content, encoding=encoding)
-        finally:
-            unregister(path)
+        # Restore first, then unregister only on success: if the restore write
+        # raises, leave the path registered so the atexit / SIGTERM backstop can
+        # retry it at exit instead of silently disarming the last-resort recovery.
+        path.write_text(original_content, encoding=encoding, newline="")
+        unregister(path)

@@ -55,7 +55,9 @@ def check_test_runner_rebuilds(
     selection = (universe[0],)
 
     target = config.target_file
-    original = target.read_text(encoding="utf-8")
+    # newline="" preserves the file's byte content (see source.read_source_file).
+    with open(target, "r", encoding="utf-8", newline="") as handle:
+        original = handle.read()
     # guarded_source_write restores the file on normal completion, exception, and
     # Ctrl-C, and via the shared backstop on SIGTERM / abnormal exit, so the
     # canary can never be left in the target source.
@@ -65,6 +67,13 @@ def check_test_runner_rebuilds(
     except TestRunError as exc:
         raise PreflightError(
             f"Could not run --test-runner-template for the rebuild check: {exc}"
+        ) from exc
+    except OSError as exc:
+        # The canary restore write failed; the file may still hold the probe. The
+        # path stays registered, so the atexit / SIGTERM backstop retries at exit.
+        raise PreflightError(
+            f"Failed to restore {config.relative_file_path} after the rebuild "
+            f"check (the backstop will retry at exit): {exc}"
         ) from exc
 
     template_passed = (not result.timed_out) and result.exit_code == 0

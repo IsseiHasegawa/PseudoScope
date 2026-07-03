@@ -6,12 +6,15 @@ from pathlib import Path
 
 import pytest
 
+from pseudoclang import executor
 from pseudoclang.executor import (
     _PENDING_RESTORES,
+    MutationExecutionError,
     _restore_pending_sources,
     run_single_mutation_test,
 )
 from pseudoclang.restore_backstop import guarded_source_write
+from pseudoclang.workspace import WorkspaceError
 from pseudoclang.locate import locate_function_body
 from pseudoclang.models import PseudoScopeConfig
 from pseudoclang.mutate import generate_default_return_mutations
@@ -84,3 +87,45 @@ def test_guarded_source_write_restores_on_exception(tmp_path):
             raise RuntimeError("boom")
     assert f.read_text() == "ORIG\n"  # restored despite the exception
     assert f not in _PENDING_RESTORES
+
+
+def test_guarded_source_write_stays_registered_when_restore_write_fails(tmp_path, monkeypatch):
+    # If the restore write itself fails, the path must remain registered so the
+    # atexit/SIGTERM backstop can retry -- it must NOT be silently unregistered.
+    f = tmp_path / "x.c"
+    f.write_text("ORIG\n")
+    real_write = Path.write_text
+    calls = {"n": 0}
+
+    def flaky_write(self, data, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:  # 1 = write canary/new (ok); 2 = restore (fails)
+            raise OSError("disk full")
+        return real_write(self, data, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", flaky_write)
+    with pytest.raises(OSError):
+        with guarded_source_write(f, "NEW\n", "ORIG\n"):
+            pass
+    assert f in _PENDING_RESTORES  # backstop still armed
+    _PENDING_RESTORES.pop(f, None)  # test cleanup
+
+
+def test_run_single_mutation_stays_registered_when_restore_fails(tmp_path, monkeypatch):
+    f = tmp_path / "x.c"
+    f.write_text(_C_SOURCE)
+    src = SourceFile(
+        path=f, relative_path=Path("x.c"), content=_C_SOURCE, encoding="utf-8", line_count=1
+    )
+    loc = locate_function_body(src, "add")
+    mutation = generate_default_return_mutations(src, loc)[0]
+
+    def boom(_mutation, encoding="utf-8"):
+        raise WorkspaceError("cannot restore")
+
+    monkeypatch.setattr(executor, "restore_original_source", boom)
+    with pytest.raises(MutationExecutionError):
+        run_single_mutation_test(_config(tmp_path, f), mutation)
+
+    assert f in _PENDING_RESTORES  # left armed for the atexit/SIGTERM backstop
+    _PENDING_RESTORES.pop(f, None)  # test cleanup
