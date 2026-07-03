@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pseudoclang.discover import SWEEP_SOURCE_SUFFIXES
 from pseudoclang.models import ConfigError, PseudoScopeConfig
+from pseudoclang.pstrace_integration import build_pstrace_coverage_map_cmd
 
 
 def _require_non_empty(value: str, field_name: str) -> str:
@@ -215,6 +216,15 @@ def build_config(
     coverage_map_cmd: str | None = None,
     refresh_coverage_map: bool = False,
     skip_runner_check: bool = False,
+    pstrace_module: str | None = None,
+    pstrace_src_root: str | None = None,
+    pstrace_build_cmd: str | None = None,
+    pstrace_test_cmd: str | None = None,
+    pstrace_python: str | None = None,
+    pstrace_repo: str | None = None,
+    pstrace_instrument_path: list[str] | None = None,
+    pstrace_hook_in: str | None = None,
+    pstrace_hook_mode: str | None = None,
 ) -> PseudoScopeConfig:
     """
     Normalize and validate all CLI fields into a :class:`PseudoScopeConfig`.
@@ -233,13 +243,51 @@ def build_config(
     lang_value = validate_lang(lang)
 
     coverage_map_path = resolve_coverage_map_path(coverage_map, project_root=root)
+
+    # --pstrace-*: PseudoClang builds the pstrace generation command itself so
+    # the user never runs pstrace by hand (see pstrace_integration).
+    pstrace_cmd = None
+    if pstrace_module and pstrace_module.strip():
+        if coverage_map_cmd and coverage_map_cmd.strip():
+            raise ConfigError(
+                "--pstrace-module and --coverage-map-cmd are mutually exclusive; "
+                "the --pstrace-* flags build the generation command for you."
+            )
+        missing = [
+            name
+            for name, value in (
+                ("--pstrace-src-root", pstrace_src_root),
+                ("--pstrace-build-cmd", pstrace_build_cmd),
+                ("--pstrace-test-cmd", pstrace_test_cmd),
+            )
+            if not (value and value.strip())
+        ]
+        if missing:
+            raise ConfigError(
+                f"--pstrace-module requires {', '.join(missing)}."
+            )
+        pstrace_cmd = build_pstrace_coverage_map_cmd(
+            project_root=root,
+            module=pstrace_module.strip(),
+            src_root=pstrace_src_root.strip(),
+            build_cmd=pstrace_build_cmd,
+            test_cmd=pstrace_test_cmd,
+            python=pstrace_python,
+            repo=pstrace_repo,
+            instrument_paths=tuple(pstrace_instrument_path or ()),
+            hook_in=pstrace_hook_in,
+            hook_mode=pstrace_hook_mode,
+        )
+        if coverage_map_path is None:
+            coverage_map_path = (root / ".pseudoclang" / "coverage-map.json").resolve()
+
     template_value = validate_selection_options(
         coverage_map_path=coverage_map_path,
         assume_coverage_complete=assume_coverage_complete,
         test_runner_template=test_runner_template,
     )
 
-    cmd_value = coverage_map_cmd.strip() if coverage_map_cmd else None
+    cmd_value = pstrace_cmd or (coverage_map_cmd.strip() if coverage_map_cmd else None)
     if cmd_value and coverage_map_path is None:
         raise ConfigError(
             "--coverage-map-cmd requires --coverage-map (the path the command "

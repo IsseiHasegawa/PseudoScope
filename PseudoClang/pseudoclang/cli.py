@@ -215,6 +215,59 @@ def build_parser() -> argparse.ArgumentParser:
             "coverage map and template are both set)."
         ),
     )
+
+    pstrace = parser.add_argument_group(
+        "pstrace integration",
+        "Let PseudoClang run pstrace itself to build the coverage map, instead of "
+        "running pstrace by hand or writing --coverage-map-cmd. Give --pstrace-module "
+        "plus how to build/test the project; PseudoClang generates the map before the "
+        "run (pstrace is expected as a sibling checkout, ../pstrace, or via "
+        "--pstrace-repo).",
+    )
+    pstrace.add_argument(
+        "--pstrace-module", metavar="MOD",
+        help="importable extension module to trace (e.g. ujson). Enables the "
+             "pstrace integration; requires --pstrace-src-root/-build-cmd/-test-cmd.",
+    )
+    pstrace.add_argument(
+        "--pstrace-src-root", metavar="PATH",
+        help="keep only functions defined under this source tree (relative to "
+             "--project-root-source-dir, or absolute).",
+    )
+    pstrace.add_argument(
+        "--pstrace-build-cmd", metavar="CMD",
+        help="shell command that builds the extension for tracing (pstrace "
+             "instruments it via a compiler wrapper), e.g. 'pip install -e .'.",
+    )
+    pstrace.add_argument(
+        "--pstrace-test-cmd", metavar="CMD",
+        help="shell command that runs the pytest suite during tracing, e.g. "
+             "'python -m pytest'.",
+    )
+    pstrace.add_argument(
+        "--pstrace-python", metavar="PATH",
+        help="the target project's interpreter used to build/test while tracing "
+             "(default: the interpreter running PseudoClang).",
+    )
+    pstrace.add_argument(
+        "--pstrace-repo", metavar="PATH",
+        help="path to the pstrace checkout (the dir containing the pstrace "
+             "package; default: ../pstrace next to this repo).",
+    )
+    pstrace.add_argument(
+        "--pstrace-instrument-path", action="append", default=[], metavar="SUB",
+        help="only instrument sources whose path matches SUB (repeatable); for "
+             "large multi-extension projects.",
+    )
+    pstrace.add_argument(
+        "--pstrace-hook-in", metavar="SUB",
+        help="link the trace hook into only the .so whose name matches SUB "
+             "(large multi-extension projects).",
+    )
+    pstrace.add_argument(
+        "--pstrace-hook-mode", choices=["auto", "link", "preload"],
+        help="pstrace hook mode (auto = preload on Linux, link on macOS).",
+    )
     return parser
 
 
@@ -396,6 +449,15 @@ def run_step_validate_input(argv: Sequence[str] | None = None) -> PseudoScopeCon
         coverage_map_cmd=args.coverage_map_cmd,
         refresh_coverage_map=args.refresh_coverage_map,
         skip_runner_check=args.skip_runner_check,
+        pstrace_module=args.pstrace_module,
+        pstrace_src_root=args.pstrace_src_root,
+        pstrace_build_cmd=args.pstrace_build_cmd,
+        pstrace_test_cmd=args.pstrace_test_cmd,
+        pstrace_python=args.pstrace_python,
+        pstrace_repo=args.pstrace_repo,
+        pstrace_instrument_path=args.pstrace_instrument_path,
+        pstrace_hook_in=args.pstrace_hook_in,
+        pstrace_hook_mode=args.pstrace_hook_mode,
     )
 
 
