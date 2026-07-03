@@ -84,14 +84,25 @@ python3 -m venv ultrajson/.venv
 ultrajson/.venv/bin/pip install -e ultrajson
 ```
 
-#4 Make venv for PseudoClang
+#4 Run tests
+```
+cd /Users/issei/Documents/summer-research/PsedoClang/ultrajson
+
+source .venv/bin/activate
+pip install pytest
+pip install -e .
+python -m pytest -q
+```
+
+
+#5 Make venv for PseudoClang
 
 ```
 python3 -m venv PseudoClang/.venv
 PseudoClang/.venv/bin/pip install -e PseudoClang
 ```
 
-#5 Apply PseudoClang to ultrajson (objToJSON.c)
+#6 Apply PseudoClang to ultrajson (objToJSON.c)
 ```
 cd /Users/issei/Documents/summer-research/PsedoClang
 source .venv/bin/activate
@@ -109,7 +120,7 @@ python -m pseudoclang \
   --output-file sweep-objToJSON.json
 ```
 
-#6 Apply PseudoClang to ultrajson (JSONtoObj.c)
+#7 Apply PseudoClang to ultrajson (JSONtoObj.c)
 ```
 python -m pseudoclang \
   --file src/ujson/python/JSONtoObj.c \
@@ -125,3 +136,39 @@ python -m pseudoclang \
 ```
 
 Example 2 (Pillow):
+#1 Make venv for Pillow
+```
+python3 -m venv Pillow/.venv
+Pillow/.venv/bin/pip install pybind11
+Pillow/.venv/bin/pip install -e "Pillow/.[tests]"
+```
+#2 Run tests for Pillow
+```
+cd Pillow
+../Pillow/.venv/bin/pytest Tests/test_image_filter.py -q
+cd ..
+```
+#3 Make venv for PseudoClang
+```
+python3 -m venv .venv
+.venv/bin/pip install -e PseudoClang
+```
+#4 Apply PseudoClang to Pillow(Filter.c)
+```
+cd /Users/issei/Documents/summer-research/PsedoClang
+source .venv/bin/activate
+
+python -m pseudoclang \
+  --file src/libImaging/Filter.c \
+  --project-root-source-dir Pillow \
+  --test-command "pip install -e . -q && pytest Tests/test_image_filter.py Tests/test_imageops_usm.py -q" \
+  --test-runner-template "pip install -e . -q && pytest -q {selection}" \
+  --pstrace-module PIL._imaging \
+  --pstrace-src-root src/libImaging \
+  --pstrace-build-cmd "python setup.py build_ext --inplace --force" \
+  --pstrace-test-cmd "python -m pytest Tests/test_image_filter.py Tests/test_imageops_usm.py" \
+  --pstrace-python Pillow/.venv/bin/python \
+  --coverage-map out.json \
+  --output-file pillow-filter-sweep.json \
+  --timeout 120
+```
