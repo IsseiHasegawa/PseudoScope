@@ -216,12 +216,13 @@ def build_config(
     project_root_source_dir: str,
     file: str | None,
     function: str | None,
-    test_command: str,
+    test_command: str | None,
     output_dir: str | None,
     output_file: str | None,
     timeout: int,
     mode: str | None,
     lang: str | None,
+    require_test_command: bool = True,
     coverage_map: str | None = None,
     assume_coverage_complete: bool = False,
     test_runner_template: str | None = None,
@@ -244,7 +245,12 @@ def build_config(
     Raises :class:`ConfigError` with a human-readable message on failure.
     """
     root = validate_project_root(project_root_source_dir)
-    command = _require_non_empty(test_command, "Test command")
+    # The coverage-map subcommand generates the map only and never runs the
+    # mutation test command, so it does not require --test-command.
+    if require_test_command:
+        command = _require_non_empty(test_command, "Test command")
+    else:
+        command = (test_command or "").strip()
     timeout_seconds = validate_timeout(timeout)
     output_path = resolve_output_path(
         output_dir=output_dir,

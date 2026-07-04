@@ -45,6 +45,33 @@ For C extensions, **include a build** in `--test-command` (e.g. `pip install -e 
 
 ## Usage
 
+### Stages (sub-commands)
+
+The CLI is split into stages so you can re-run only what changed. After improving your test suite, re-run just `analyze` to re-check the same functions without rebuilding the (expensive) pstrace coverage map.
+
+| Sub-command | Does | Typical use |
+|-------------|------|-------------|
+| `run` (default) | Full pipeline: build the coverage map if needed, then analyze | First run, or when nothing is cached |
+| `coverage-map` | Only (re)builds the pstrace coverage map, then exits | Regenerate the map after the source under test changes |
+| `analyze` | Only runs mutation analysis, reusing an existing map (never rebuilds it) | Re-check after improving tests; skips pstrace |
+
+```bash
+# Build the map once (pstrace)
+python -m pseudoclang coverage-map \
+  --project-root-source-dir ultrajson \
+  --coverage-map output/coverage-map.json \
+  --pstrace-module ujson --pstrace-src-root src/ujson \
+  --pstrace-build-cmd "pip install -e ." --pstrace-test-cmd "python -m pytest"
+
+# Improve tests, then re-check WITHOUT rebuilding the map
+python -m pseudoclang analyze \
+  --project-root-source-dir ultrajson \
+  --file src/ujson/python/objToJSON.c --function objToJSON \
+  --test-command "pytest" --coverage-map output/coverage-map.json
+```
+
+The sub-command is optional: omitting it (the plain `python -m pseudoclang --project-root-source-dir ...` form below) runs `run`, so existing commands keep working.
+
 | Option | Required | Default | Description |
 |--------|----------|---------|-------------|
 | `--project-root-source-dir` | yes | — | Project root (cwd for tests) |

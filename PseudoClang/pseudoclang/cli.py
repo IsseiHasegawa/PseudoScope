@@ -65,29 +65,19 @@ from pseudoclang.validation import build_config, require_target_file
 DEFAULT_TIMEOUT_SECONDS = 60
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Define PseudoClang CLI arguments."""
-    parser = argparse.ArgumentParser(
-        prog="pseudoclang",
-        description=(
-            "PseudoClang detects pseudo-tested code in C/C++ projects. "
-            "Omit --function to analyze every function in --file (file sweep)."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Example:\n"
-            "  python -m pseudoclang \\\n"
-            "    --project-root-source-dir ultrajson \\\n"
-            "    --file src/ujson/python/objToJSON.c \\\n"
-            "    --test-command \"source .venv/bin/activate && pip install -e . && pytest\"\n"
-            "\n"
-            "Results default to PseudoClang's own output/ directory (the target "
-            "project is left untouched); pass --output-dir/--output-file to "
-            "redirect.\n"
-            "Optional: --file, --output-file, --timeout (default 60), "
-            "--mode, --lang (stubs for future use)."
-        ),
+COMMANDS: tuple[str, ...] = ("run", "coverage-map", "analyze")
+
+
+def _add_project_root_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--project-root-source-dir",
+        required=True,
+        metavar="PATH",
+        help="Root directory of the target project (source tree and test cwd).",
     )
+
+
+def _add_target_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--file",
         default=None,
@@ -98,11 +88,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--project-root-source-dir",
-        required=True,
-        metavar="PATH",
-        help="Root directory of the target project (source tree and test cwd).",
+        "--function",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Function or method to analyze. If omitted, all functions in "
+            "--file are analyzed (file sweep; .c / .cpp only)."
+        ),
     )
+
+
+def _add_analysis_core_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--test-command",
         required=True,
@@ -150,15 +146,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="LANG",
         help="Source language hint (stub; reserved for future use).",
     )
-    parser.add_argument(
-        "--function",
-        default=None,
-        metavar="NAME",
-        help=(
-            "Function or method to analyze. If omitted, all functions in "
-            "--file are analyzed (file sweep; .c / .cpp only)."
-        ),
-    )
+
+
+def _add_coverage_map_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--coverage-map",
         default=None,
@@ -171,26 +161,10 @@ def build_parser() -> argparse.ArgumentParser:
             "own output/coverage-map.json (keeps the target project untouched)."
         ),
     )
-    parser.add_argument(
-        "--coverage-map-cmd",
-        default=None,
-        metavar="CMD",
-        help=(
-            "Shell command that generates the --coverage-map JSON (e.g. a pstrace "
-            "recipe). Run before the sweep when the map file is absent (or with "
-            "--refresh-coverage-map), with $PSEUDOCLANG_COVERAGE_MAP set to the "
-            "map's absolute path. Requires --coverage-map."
-        ),
-    )
-    parser.add_argument(
-        "--refresh-coverage-map",
-        action="store_true",
-        help=(
-            "Force --coverage-map-cmd to regenerate the map even if the file "
-            "already exists (default: reuse an existing map). Requires "
-            "--coverage-map-cmd."
-        ),
-    )
+
+
+def _add_consume_args(parser: argparse.ArgumentParser) -> None:
+    """Flags that consume an existing coverage map during analysis."""
     parser.add_argument(
         "--assume-coverage-complete",
         action="store_true",
@@ -217,6 +191,30 @@ def build_parser() -> argparse.ArgumentParser:
             "Skip the preflight check that --test-runner-template rebuilds the "
             "target before judging selected mutants (default: run it when a "
             "coverage map and template are both set)."
+        ),
+    )
+
+
+def _add_generate_args(parser: argparse.ArgumentParser) -> None:
+    """Flags that generate the coverage map (pstrace / a generator command)."""
+    parser.add_argument(
+        "--coverage-map-cmd",
+        default=None,
+        metavar="CMD",
+        help=(
+            "Shell command that generates the --coverage-map JSON (e.g. a pstrace "
+            "recipe). Run before the sweep when the map file is absent (or with "
+            "--refresh-coverage-map), with $PSEUDOCLANG_COVERAGE_MAP set to the "
+            "map's absolute path. Requires --coverage-map."
+        ),
+    )
+    parser.add_argument(
+        "--refresh-coverage-map",
+        action="store_true",
+        help=(
+            "Force --coverage-map-cmd to regenerate the map even if the file "
+            "already exists (default: reuse an existing map). Requires "
+            "--coverage-map-cmd."
         ),
     )
 
@@ -272,7 +270,131 @@ def build_parser() -> argparse.ArgumentParser:
         "--pstrace-hook-mode", choices=["auto", "link", "preload"],
         help="pstrace hook mode (auto = preload on Linux, link on macOS).",
     )
+
+
+def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
+    """The full analysis argument set (the ``run`` command and the default)."""
+    _add_target_args(parser)
+    _add_project_root_arg(parser)
+    _add_analysis_core_args(parser)
+    _add_coverage_map_arg(parser)
+    _add_consume_args(parser)
+    _add_generate_args(parser)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Define PseudoClang CLI arguments, split into stage sub-commands.
+
+    ``run`` (also the implicit default when no sub-command is given) does the
+    full pipeline. ``coverage-map`` only builds the pstrace map; ``analyze``
+    only runs mutation analysis against an existing map (never regenerates it),
+    so an improved test suite can be re-checked without rebuilding the map.
+    """
+    parser = argparse.ArgumentParser(
+        prog="pseudoclang",
+        description=(
+            "PseudoClang detects pseudo-tested code in C/C++ projects. "
+            "Omit --function to analyze every function in --file (file sweep)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Example (no sub-command = 'run', the full pipeline):\n"
+            "  python -m pseudoclang \\\n"
+            "    --project-root-source-dir ultrajson \\\n"
+            "    --file src/ujson/python/objToJSON.c \\\n"
+            "    --test-command \"source .venv/bin/activate && pip install -e . && pytest\"\n"
+            "\n"
+            "Sub-commands: run (default), coverage-map (build the map only), "
+            "analyze (reuse an existing map, never rebuild it). After improving "
+            "tests, re-run only 'analyze' to skip the expensive pstrace step.\n"
+            "Results default to PseudoClang's own output/ directory (the target "
+            "project is left untouched); pass --output-dir/--output-file to "
+            "redirect."
+        ),
+    )
+    subparsers = parser.add_subparsers(
+        dest="command",
+        metavar="{run,coverage-map,analyze}",
+        help="Stage to run (default: run when omitted).",
+    )
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Full pipeline: build the coverage map if needed, then analyze.",
+    )
+    _add_run_arguments(run_parser)
+
+    cov_parser = subparsers.add_parser(
+        "coverage-map",
+        help="Only (re)build the pstrace coverage map, then exit.",
+    )
+    _add_project_root_arg(cov_parser)
+    _add_coverage_map_arg(cov_parser)
+    _add_generate_args(cov_parser)
+
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Only run mutation analysis, reusing an existing coverage map "
+             "(never regenerates it).",
+    )
+    _add_target_args(analyze_parser)
+    _add_project_root_arg(analyze_parser)
+    _add_analysis_core_args(analyze_parser)
+    _add_coverage_map_arg(analyze_parser)
+    _add_consume_args(analyze_parser)
+
     return parser
+
+
+def normalize_argv(argv: Sequence[str] | None) -> list[str]:
+    """Inject the implicit ``run`` sub-command for backward compatibility.
+
+    Historically the CLI took analysis flags directly (no sub-command). When
+    the first token is not a known sub-command (e.g. it is ``--project-root-...``
+    or empty), default to ``run`` so old invocations keep working. A top-level
+    ``-h``/``--help`` is left alone so the sub-command list is shown.
+    """
+    args = list(argv) if argv is not None else sys.argv[1:]
+    if args and (args[0] in COMMANDS or args[0] in ("-h", "--help")):
+        return args
+    return ["run", *args]
+
+
+def _build_config_from_args(args: argparse.Namespace) -> PseudoScopeConfig:
+    """Build a :class:`PseudoScopeConfig` from any sub-command's parsed args.
+
+    Sub-commands expose different flag subsets, so missing attributes fall back
+    to their defaults via ``getattr``. ``coverage-map`` never runs the mutation
+    test command, so ``--test-command`` is not required for it.
+    """
+    command = getattr(args, "command", "run") or "run"
+    return build_config(
+        project_root_source_dir=args.project_root_source_dir,
+        file=getattr(args, "file", None),
+        function=getattr(args, "function", None),
+        test_command=getattr(args, "test_command", None),
+        output_dir=getattr(args, "output_dir", None),
+        output_file=getattr(args, "output_file", None),
+        timeout=getattr(args, "timeout", DEFAULT_TIMEOUT_SECONDS),
+        mode=getattr(args, "mode", None),
+        lang=getattr(args, "lang", None),
+        require_test_command=command != "coverage-map",
+        coverage_map=getattr(args, "coverage_map", None),
+        assume_coverage_complete=getattr(args, "assume_coverage_complete", False),
+        test_runner_template=getattr(args, "test_runner_template", None),
+        coverage_map_cmd=getattr(args, "coverage_map_cmd", None),
+        refresh_coverage_map=getattr(args, "refresh_coverage_map", False),
+        skip_runner_check=getattr(args, "skip_runner_check", False),
+        pstrace_module=getattr(args, "pstrace_module", None),
+        pstrace_src_root=getattr(args, "pstrace_src_root", None),
+        pstrace_build_cmd=getattr(args, "pstrace_build_cmd", None),
+        pstrace_test_cmd=getattr(args, "pstrace_test_cmd", None),
+        pstrace_python=getattr(args, "pstrace_python", None),
+        pstrace_repo=getattr(args, "pstrace_repo", None),
+        pstrace_instrument_path=getattr(args, "pstrace_instrument_path", None),
+        pstrace_hook_in=getattr(args, "pstrace_hook_in", None),
+        pstrace_hook_mode=getattr(args, "pstrace_hook_mode", None),
+    )
 
 
 def print_config_summary(config: PseudoScopeConfig) -> None:
@@ -433,36 +555,12 @@ def run_step_validate_input(argv: Sequence[str] | None = None) -> PseudoScopeCon
     """
     Step 1: parse CLI arguments and return validated configuration.
 
-    Raises :class:`ConfigError` on invalid input.
+    Parses in the implicit-``run`` form (no sub-command needed), so existing
+    callers keep working. Raises :class:`ConfigError` on invalid input.
     """
     parser = build_parser()
-    args = parser.parse_args(list(argv) if argv is not None else None)
-    return build_config(
-        project_root_source_dir=args.project_root_source_dir,
-        file=args.file,
-        function=args.function,
-        test_command=args.test_command,
-        output_dir=args.output_dir,
-        output_file=args.output_file,
-        timeout=args.timeout,
-        mode=args.mode,
-        lang=args.lang,
-        coverage_map=args.coverage_map,
-        assume_coverage_complete=args.assume_coverage_complete,
-        test_runner_template=args.test_runner_template,
-        coverage_map_cmd=args.coverage_map_cmd,
-        refresh_coverage_map=args.refresh_coverage_map,
-        skip_runner_check=args.skip_runner_check,
-        pstrace_module=args.pstrace_module,
-        pstrace_src_root=args.pstrace_src_root,
-        pstrace_build_cmd=args.pstrace_build_cmd,
-        pstrace_test_cmd=args.pstrace_test_cmd,
-        pstrace_python=args.pstrace_python,
-        pstrace_repo=args.pstrace_repo,
-        pstrace_instrument_path=args.pstrace_instrument_path,
-        pstrace_hook_in=args.pstrace_hook_in,
-        pstrace_hook_mode=args.pstrace_hook_mode,
-    )
+    args = parser.parse_args(normalize_argv(argv))
+    return _build_config_from_args(args)
 
 
 def run_step_read_source(
@@ -664,15 +762,13 @@ def run_file_sweep_mode(
     return 0 if result.get("completed", False) else 130
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point: validate, read, locate, mutate, baseline test; print summaries."""
-    try:
-        config = run_step_validate_input(argv)
-        require_target_file(config)
-    except ConfigError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+def _run_analysis(config: PseudoScopeConfig) -> int:
+    """Run mutation analysis for a validated config (the run/analyze stages).
 
+    The coverage map is loaded via :func:`load_coverage_map_for_run`, which only
+    (re)generates it when ``config.coverage_map_cmd`` is set. The ``analyze``
+    stage never sets it, so it always reuses an existing map (never rebuilds).
+    """
     print_config_summary(config)
 
     try:
@@ -770,6 +866,70 @@ def main(argv: Sequence[str] | None = None) -> int:
     print_json_result_summary(analysis)
     print_result_table(analysis)
     return 0
+
+
+def _run_coverage_map_command(args: argparse.Namespace) -> int:
+    """The ``coverage-map`` stage: (re)build the pstrace map only, then exit."""
+    try:
+        config = _build_config_from_args(args)
+    except ConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if config.coverage_map_cmd is None or config.coverage_map_path is None:
+        print(
+            "Error: coverage-map needs a generator: pass --pstrace-module with "
+            "its sub-flags, or --coverage-map-cmd together with --coverage-map.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Project root: {config.project_root}")
+    print(f"Coverage map: {config.coverage_map_path}")
+
+    if config.coverage_map_path.exists() and not config.refresh_coverage_map:
+        print()
+        print(
+            f"Coverage map already exists: {config.coverage_map_path} "
+            "(pass --refresh-coverage-map to regenerate)."
+        )
+        return 0
+
+    try:
+        generate_coverage_map(config)
+    except CoverageMapError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print()
+    print(f"Coverage map written: {config.coverage_map_path}")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point: dispatch a stage sub-command (default: ``run``).
+
+    ``run`` (and the implicit default when no sub-command is given) does the
+    full pipeline. ``coverage-map`` only builds the pstrace map. ``analyze``
+    only re-runs mutation analysis against an existing map, so an improved test
+    suite can be re-checked without the expensive map rebuild.
+    """
+    parser = build_parser()
+    args = parser.parse_args(normalize_argv(argv))
+    command = getattr(args, "command", "run") or "run"
+
+    if command == "coverage-map":
+        return _run_coverage_map_command(args)
+
+    # run / analyze both run mutation analysis; they differ only in flags, so
+    # analyze has no map-generation options and always reuses an existing map.
+    try:
+        config = _build_config_from_args(args)
+        require_target_file(config)
+    except ConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    return _run_analysis(config)
 
 
 if __name__ == "__main__":
