@@ -20,8 +20,10 @@ import argparse
 import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Sequence
 
+from pseudoclang import backup
 from pseudoclang.locate import (
     FunctionBodyLocation,
     FunctionLocateError,
@@ -60,12 +62,16 @@ from pseudoclang.results import (
 from pseudoclang.sweep import SweepAbortError, run_file_sweep
 from pseudoclang.runner import TestRunError, TestRunResult, run_test_command
 from pseudoclang.source import SourceFile, SourceReadError, read_source_file
-from pseudoclang.validation import build_config, require_target_file
+from pseudoclang.validation import (
+    build_config,
+    require_target_file,
+    validate_project_root,
+)
 
 DEFAULT_TIMEOUT_SECONDS = 60
 
 
-COMMANDS: tuple[str, ...] = ("run", "coverage-map", "analyze")
+COMMANDS: tuple[str, ...] = ("run", "coverage-map", "analyze", "restore")
 
 
 def _add_project_root_arg(parser: argparse.ArgumentParser) -> None:
@@ -342,6 +348,35 @@ def build_parser() -> argparse.ArgumentParser:
     _add_analysis_core_args(analyze_parser)
     _add_coverage_map_arg(analyze_parser)
     _add_consume_args(analyze_parser)
+
+    restore_parser = subparsers.add_parser(
+        "restore",
+        help="Restore any source files a crashed run left mutated in the target "
+             "project (the last-resort undo for SIGKILL / power loss).",
+    )
+    restore_parser.add_argument(
+        "--project-root-source-dir",
+        default=None,
+        metavar="PATH",
+        help="Only restore files under this project root (default: all pending).",
+    )
+    restore_parser.add_argument(
+        "--backups-dir",
+        default=None,
+        metavar="PATH",
+        help="Backups directory to read (default: PseudoClang's output/backups).",
+    )
+    restore_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be restored without writing anything.",
+    )
+    restore_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite even a file edited since (or recreate a deleted one). "
+             "Default: skip such files so no unrelated change is clobbered.",
+    )
 
     return parser
 
@@ -906,13 +941,69 @@ def _run_coverage_map_command(args: argparse.Namespace) -> int:
     return 0
 
 
+_RESTORE_STATUS_LABELS = {
+    "restored": "restored to original",
+    "forced": "force-restored (on-disk content differed)",
+    "already_clean": "already original (backup cleared)",
+    "skipped_user_edit": "SKIPPED: edited since; rerun with --force to overwrite",
+    "skipped_missing": "SKIPPED: file is missing; rerun with --force to recreate",
+    "missing_backup": "ERROR: backup file is missing",
+    "error": "ERROR: could not write",
+}
+
+
+def _run_restore_command(args: argparse.Namespace) -> int:
+    """The ``restore`` stage: undo any mutation a crashed run left on disk."""
+    project_root = None
+    if args.project_root_source_dir:
+        try:
+            project_root = validate_project_root(args.project_root_source_dir)
+        except ConfigError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+    backups_dir = (
+        Path(args.backups_dir).expanduser().resolve() if args.backups_dir else None
+    )
+
+    outcomes = backup.restore_pending(
+        project_root=project_root,
+        dry_run=args.dry_run,
+        force=args.force,
+        backups_dir=backups_dir,
+    )
+
+    if not outcomes:
+        print("Nothing to restore: no source files are left mutated.")
+        return 0
+
+    prefix = "[dry-run] " if args.dry_run else ""
+    unresolved = 0
+    for outcome in outcomes:
+        label = _RESTORE_STATUS_LABELS.get(outcome.status, outcome.status)
+        line = f"  {prefix}{outcome.target}: {label}"
+        if outcome.detail:
+            line += f" ({outcome.detail})"
+        print(line)
+        if not outcome.resolved:
+            unresolved += 1
+
+    print()
+    resolved = len(outcomes) - unresolved
+    if args.dry_run:
+        print(f"{len(outcomes)} pending; would resolve {resolved}, skip {unresolved}.")
+        return 0
+    print(f"Restored/cleared {resolved} of {len(outcomes)}; {unresolved} left untouched.")
+    return 1 if unresolved else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point: dispatch a stage sub-command (default: ``run``).
 
     ``run`` (and the implicit default when no sub-command is given) does the
     full pipeline. ``coverage-map`` only builds the pstrace map. ``analyze``
     only re-runs mutation analysis against an existing map, so an improved test
-    suite can be re-checked without the expensive map rebuild.
+    suite can be re-checked without the expensive map rebuild. ``restore`` undoes
+    any mutation a crashed run left behind in the target project.
     """
     parser = build_parser()
     args = parser.parse_args(normalize_argv(argv))
@@ -920,6 +1011,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if command == "coverage-map":
         return _run_coverage_map_command(args)
+
+    if command == "restore":
+        return _run_restore_command(args)
 
     # run / analyze both run mutation analysis; they differ only in flags, so
     # analyze has no map-generation options and always reuses an existing map.

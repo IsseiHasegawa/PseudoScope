@@ -16,6 +16,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from pseudoclang import backup
+
 # Sources currently edited on disk, mapped to their original content. The
 # per-operation ``finally`` is the primary restore; this registry lets the
 # ``atexit`` / ``SIGTERM`` backstop restore a source in the narrow window where
@@ -78,6 +80,12 @@ def guarded_source_write(
     install_backstop()
     path.write_text(new_content, encoding=encoding, newline="")
     register(path, original_content)
+    # Persist the original so a hard crash can be undone via `pseudoclang restore`.
+    backup.record(
+        path,
+        original_bytes=original_content.encode(encoding),
+        mutated_bytes=new_content.encode(encoding),
+    )
     try:
         yield
     finally:
@@ -86,3 +94,4 @@ def guarded_source_write(
         # retry it at exit instead of silently disarming the last-resort recovery.
         path.write_text(original_content, encoding=encoding, newline="")
         unregister(path)
+        backup.clear(path)

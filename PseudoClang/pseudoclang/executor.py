@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from pseudoclang import backup
 from pseudoclang.coverage_map import ExecutionPlan, PlanKind
 from pseudoclang.models import PseudoScopeConfig
 from pseudoclang.mutate import MutatedSource
@@ -210,6 +211,14 @@ def run_single_mutation_test(
             write_mutated_source(mutation, encoding=encoding)
             written = True
             register(mutation.path, mutation.original_content)
+            # Persist the original to disk too, so a hard crash (SIGKILL / power
+            # loss) can still be undone later via `pseudoclang restore`.
+            backup.record(
+                mutation.path,
+                original_bytes=mutation.original_content.encode(encoding),
+                mutated_bytes=mutation.mutated_content.encode(encoding),
+                function=mutation.function_name,
+            )
         except WorkspaceError as exc:
             raise MutationExecutionError(
                 f"Failed to write mutated source for {mutation.function_name} "
@@ -237,6 +246,9 @@ def run_single_mutation_test(
                 # KeyboardInterrupt mid-write) the path stays registered so the
                 # atexit / SIGTERM backstop can retry the restore at exit.
                 unregister(mutation.path)
+                # The source is back to original, so drop its persistent backup;
+                # a clean run therefore leaves nothing under output/backups.
+                backup.clear(mutation.path)
             except WorkspaceError as exc:
                 raise MutationExecutionError(
                     f"CRITICAL: Failed to restore original source at "

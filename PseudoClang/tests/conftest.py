@@ -6,7 +6,19 @@ from pathlib import Path
 
 import pytest
 
+from pseudoclang.backup import BACKUPS_DIR_ENV
 from pseudoclang.source import SourceFile
+
+
+@pytest.fixture(autouse=True)
+def _isolate_backups(tmp_path_factory, monkeypatch):
+    """Point the crash-safety backups at a temp dir, never the real output/.
+
+    Mutation/preflight runs persist a backup of each source before mutating it;
+    without this every test would write into the real PseudoClang/output/backups.
+    """
+    backups = tmp_path_factory.mktemp("pseudoclang-backups")
+    monkeypatch.setenv(BACKUPS_DIR_ENV, str(backups))
 
 
 def _make_source(content: str, name: str = "sample.c") -> SourceFile:

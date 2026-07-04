@@ -54,6 +54,7 @@ The CLI is split into stages so you can re-run only what changed. After improvin
 | `run` (default) | Full pipeline: build the coverage map if needed, then analyze | First run, or when nothing is cached |
 | `coverage-map` | Only (re)builds the pstrace coverage map, then exits | Regenerate the map after the source under test changes |
 | `analyze` | Only runs mutation analysis, reusing an existing map (never rebuilds it) | Re-check after improving tests; skips pstrace |
+| `restore` | Undo any mutation a crashed run left in the target project | Recover after a hard crash (`kill -9`, power loss) |
 
 ```bash
 # Build the map once (pstrace)
@@ -71,6 +72,17 @@ python -m pseudoclang analyze \
 ```
 
 The sub-command is optional: omitting it (the plain `python -m pseudoclang --project-root-source-dir ...` form below) runs `run`, so existing commands keep working.
+
+#### Crash recovery (`restore`)
+
+While analyzing, PseudoClang temporarily rewrites the target's source (inserts a mutant), runs the tests, then restores the original. Normal completion, errors, and Ctrl-C always restore it. A **hard** crash (`kill -9`, OOM, power loss) is the one case the in-process restore cannot cover, so before each mutation the original bytes are saved under PseudoClang's own `output/backups/` (never in the target project). If a crash ever leaves a file mutated, put the target back with:
+
+```bash
+python -m pseudoclang restore            # restore everything left mutated
+python -m pseudoclang restore --dry-run  # preview what would be restored
+```
+
+`restore` only reverts files still in the exact mutated state it left them in; a file you edited (or deleted) since is skipped unless you pass `--force`. A clean run leaves nothing to restore. Set `PSEUDOCLANG_BACKUPS_DIR` to relocate the backup store (or `--backups-dir` on `restore`).
 
 | Option | Required | Default | Description |
 |--------|----------|---------|-------------|

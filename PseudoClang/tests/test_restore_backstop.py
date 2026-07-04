@@ -95,11 +95,11 @@ def test_guarded_source_write_stays_registered_when_restore_write_fails(tmp_path
     f = tmp_path / "x.c"
     f.write_text("ORIG\n")
     real_write = Path.write_text
-    calls = {"n": 0}
 
     def flaky_write(self, data, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 2:  # 1 = write canary/new (ok); 2 = restore (fails)
+        # Fail only the restore write (original content back to the source), so
+        # the assertion is robust to any other bookkeeping writes in between.
+        if self == f and data == "ORIG\n":
             raise OSError("disk full")
         return real_write(self, data, **kwargs)
 
