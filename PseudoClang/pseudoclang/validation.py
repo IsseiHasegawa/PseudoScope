@@ -229,6 +229,7 @@ def build_config(
     coverage_map_cmd: str | None = None,
     refresh_coverage_map: bool = False,
     skip_runner_check: bool = False,
+    test_list_cmd: str | None = None,
     pstrace_module: str | None = None,
     pstrace_src_root: str | None = None,
     pstrace_build_cmd: str | None = None,
@@ -319,6 +320,15 @@ def build_config(
             "regenerate otherwise)."
         )
 
+    test_list_value = test_list_cmd.strip() if test_list_cmd else None
+    if test_list_value == "":
+        test_list_value = None
+    if test_list_value and coverage_map_path is None:
+        raise ConfigError(
+            "--test-list-cmd requires --coverage-map (it checks a reused map for "
+            "tests it never recorded)."
+        )
+
     if file is None or not file.strip():
         relative_file_path = None
         target_file = None
@@ -352,4 +362,5 @@ def build_config(
         coverage_map_cmd=cmd_value,
         refresh_coverage_map=refresh_coverage_map,
         skip_runner_check=skip_runner_check,
+        test_list_cmd=test_list_value,
     )

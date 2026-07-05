@@ -79,10 +79,15 @@ def resolve_execution_plan(
     if plan.kind is PlanKind.RUN_SELECTED:
         unknown = [n for n in plan.nodeids if n not in coverage_map.universe()]
         if unknown:
+            # Intra-map inconsistency only: nodeids listed under this function but
+            # absent from the map's own 'tests' universe. This does NOT detect
+            # tests added to the live suite since the map was captured; the
+            # staleness advisory / --test-list-cmd check in the CLI covers that.
             print(
                 f"Warning: coverage map lists {len(unknown)} test(s) for "
-                f"{function_name} not present in its 'tests' universe "
-                f"(map may be stale): {sorted(unknown)[:3]}",
+                f"{function_name} that are absent from the map's own 'tests' "
+                f"universe (the map is internally inconsistent): "
+                f"{sorted(unknown)[:3]}",
                 file=sys.stderr,
             )
         if not config.test_runner_template:
@@ -91,6 +96,63 @@ def resolve_execution_plan(
             )
 
     return plan
+
+
+def full_command_judges_any_mutant(
+    config: PseudoScopeConfig,
+    coverage_map: CoverageMap | None,
+    function_names: list[str] | tuple[str, ...],
+) -> bool:
+    """
+    True if ``--test-command`` (the full command) judges at least one mutant.
+
+    The full command is used for every RUN_FULL plan (no map, no template, or an
+    ABSENT-default / STARTUP_ONLY fallback) and for the baseline. A pure-selected
+    run judges every mutant with ``--test-runner-template`` instead, so the full
+    command only runs the baseline against the original (compilable) source.
+
+    Used to gate the ``--test-command`` rebuild preflight so it fires exactly when
+    a stale binary could silently make a mutant "survive", and never blocks a
+    legitimate pure-selected run. Pure and side-effect free.
+    """
+    if coverage_map is None:
+        return True
+    if config.test_runner_template is None:
+        # A SELECTED lookup degrades to a full run without a template.
+        return True
+    for function_name in function_names:
+        selection = coverage_map.lookup(config.relative_file_path, function_name)
+        plan = decide_execution(
+            selection, assume_complete=config.assume_coverage_complete
+        )
+        if plan.kind is PlanKind.RUN_FULL:
+            return True
+    return False
+
+
+def map_selects_any_mutant(
+    config: PseudoScopeConfig,
+    coverage_map: CoverageMap | None,
+    function_names: list[str] | tuple[str, ...],
+) -> bool:
+    """
+    True if the map drives a SELECTED test subset for at least one function.
+
+    Only then can a stale map (a test added since capture, hence outside every
+    selected subset) cause a false pseudo-tested verdict; without a template
+    every plan is RUN_FULL and runs the whole current suite. Pure and
+    side-effect free.
+    """
+    if coverage_map is None or config.test_runner_template is None:
+        return False
+    for function_name in function_names:
+        selection = coverage_map.lookup(config.relative_file_path, function_name)
+        plan = decide_execution(
+            selection, assume_complete=config.assume_coverage_complete
+        )
+        if plan.kind is PlanKind.RUN_SELECTED:
+            return True
+    return False
 
 
 def execute_plan(

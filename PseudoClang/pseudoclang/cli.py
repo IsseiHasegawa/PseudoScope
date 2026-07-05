@@ -35,7 +35,12 @@ from pseudoclang.mutate import (
     generate_default_return_mutations,
     replacement_return_line,
 )
-from pseudoclang.analysis import execute_plan, resolve_execution_plan
+from pseudoclang.analysis import (
+    execute_plan,
+    full_command_judges_any_mutant,
+    map_selects_any_mutant,
+    resolve_execution_plan,
+)
 from pseudoclang.coverage_map import (
     CoverageMap,
     CoverageMapError,
@@ -50,7 +55,12 @@ from pseudoclang.executor import (
     MutationRunResult,
 )
 from pseudoclang.models import ConfigError, PseudoScopeConfig
-from pseudoclang.preflight import PreflightError, check_test_runner_rebuilds
+from pseudoclang.preflight import (
+    PreflightError,
+    check_map_covers_current_tests,
+    check_test_command_rebuilds,
+    check_test_runner_rebuilds,
+)
 from pseudoclang.discover import DiscoverError, discover_functions
 from pseudoclang.results import (
     ResultWriteError,
@@ -194,9 +204,22 @@ def _add_consume_args(parser: argparse.ArgumentParser) -> None:
         "--skip-runner-check",
         action="store_true",
         help=(
-            "Skip the preflight check that --test-runner-template rebuilds the "
-            "target before judging selected mutants (default: run it when a "
-            "coverage map and template are both set)."
+            "Skip the preflight rebuild checks that --test-command and "
+            "--test-runner-template rebuild the target before judging mutants "
+            "(default: run them). A command that skips the build tests a stale "
+            "binary and makes every function look pseudo-tested."
+        ),
+    )
+    parser.add_argument(
+        "--test-list-cmd",
+        default=None,
+        metavar="CMD",
+        help=(
+            "Shell command that prints the current test nodeids (one per line, "
+            "same format as the map), e.g. \"python -m pytest --collect-only -q "
+            "| grep '::'\". When a reused --coverage-map drives test selection, "
+            "PseudoClang warns about tests the map never recorded (they would not "
+            "run against any mutant). Requires --coverage-map."
         ),
     )
 
@@ -420,6 +443,7 @@ def _build_config_from_args(args: argparse.Namespace) -> PseudoScopeConfig:
         coverage_map_cmd=getattr(args, "coverage_map_cmd", None),
         refresh_coverage_map=getattr(args, "refresh_coverage_map", False),
         skip_runner_check=getattr(args, "skip_runner_check", False),
+        test_list_cmd=getattr(args, "test_list_cmd", None),
         pstrace_module=getattr(args, "pstrace_module", None),
         pstrace_src_root=getattr(args, "pstrace_src_root", None),
         pstrace_build_cmd=getattr(args, "pstrace_build_cmd", None),
@@ -757,6 +781,41 @@ def load_coverage_map_for_run(config: PseudoScopeConfig) -> CoverageMap | None:
     return coverage_map
 
 
+def run_preflight_guards(
+    config: PseudoScopeConfig,
+    coverage_map: CoverageMap | None,
+    function_names: list[str] | tuple[str, ...],
+) -> None:
+    """Run the rebuild + map-freshness preflight guards before analysis.
+
+    Raises :class:`PreflightError` when a rebuild guard trips (the caller makes
+    it fatal); the map-freshness check only warns and never raises.
+    ``function_names`` are the functions this run will analyze (one name, or every
+    discovered function in sweep mode): they decide whether the full
+    ``--test-command`` judges any mutant (RUN_FULL path) and whether the map
+    drives a selected subset that a stale map could invalidate.
+    """
+    if not config.skip_runner_check:
+        # #2: the full --test-command must rebuild, but only probe it when it
+        # actually judges a mutant. A pure-selected run uses it only for the
+        # baseline against the original (compilable) source, so probing there
+        # would wrongly block a valid run.
+        if config.target_file is not None and full_command_judges_any_mutant(
+            config, coverage_map, function_names
+        ):
+            check_test_command_rebuilds(config)
+        # The selected-subset template must rebuild too (existing check).
+        if coverage_map is not None and config.test_runner_template is not None:
+            check_test_runner_rebuilds(config, coverage_map)
+
+    # #1: warn (never block) when a reused map drives selection and may predate
+    # current tests. Independent of --skip-runner-check since it cannot fail a run.
+    if coverage_map is not None and map_selects_any_mutant(
+        config, coverage_map, function_names
+    ):
+        check_map_covers_current_tests(config, coverage_map)
+
+
 def run_file_sweep_mode(
     config: PseudoScopeConfig,
     coverage_map: CoverageMap | None = None,
@@ -780,6 +839,15 @@ def run_file_sweep_mode(
     print(f"Discovered {len(discovered)} function(s) in {config.relative_file_path}:")
     for item in discovered:
         print(f"  - {item.name} (line {item.start_line})")
+
+    if discovered:
+        try:
+            run_preflight_guards(
+                config, coverage_map, [item.name for item in discovered]
+            )
+        except PreflightError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     try:
         result = run_file_sweep(
@@ -812,19 +880,14 @@ def _run_analysis(config: PseudoScopeConfig) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    if (
-        coverage_map is not None
-        and config.test_runner_template is not None
-        and not config.skip_runner_check
-    ):
-        try:
-            check_test_runner_rebuilds(config, coverage_map)
-        except PreflightError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1
-
     if config.function_name is None:
         return run_file_sweep_mode(config, coverage_map)
+
+    try:
+        run_preflight_guards(config, coverage_map, [config.function_name])
+    except PreflightError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     try:
         source = run_step_read_source(config)

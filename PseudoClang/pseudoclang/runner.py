@@ -100,6 +100,22 @@ def run_test_command(config: PseudoScopeConfig) -> TestRunResult:
     return _run_shell_command(config.test_command, config)
 
 
+def run_test_list_command(config: PseudoScopeConfig) -> TestRunResult:
+    """
+    Run ``config.test_list_cmd`` to enumerate the current test nodeids.
+
+    Uses the same subprocess/cwd/timeout/capture handling as every other
+    command; the caller parses ``stdout`` (one nodeid per line). Raises
+    :class:`TestRunError` if the process cannot be started, or if no
+    ``--test-list-cmd`` is configured.
+    """
+    if not config.test_list_cmd:
+        raise TestRunError(
+            "Test list requested but no --test-list-cmd is set."
+        )
+    return _run_shell_command(config.test_list_cmd, config)
+
+
 def build_selected_command(template: str, nodeids: tuple[str, ...] | list[str]) -> str:
     """
     Substitute shell-quoted ``nodeids`` into ``template``'s ``{selection}``.

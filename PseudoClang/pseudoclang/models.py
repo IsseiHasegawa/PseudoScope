@@ -39,6 +39,11 @@ class PseudoScopeConfig:
     # to produce the map before the run, unless the file already exists.
     coverage_map_cmd: str | None = None
     refresh_coverage_map: bool = False
-    # Skip the preflight check that --test-runner-template rebuilds the target
-    # before judging selected mutants against it.
+    # Skip the preflight rebuild checks: that --test-command and
+    # --test-runner-template rebuild the target before judging mutants against it.
     skip_runner_check: bool = False
+    # Optional shell command that prints the current test nodeids (one per line)
+    # so a reused coverage map can be checked for tests it never recorded. When
+    # unset, that staleness check falls back to an advisory (the tool is
+    # runner-agnostic and cannot otherwise enumerate the live suite).
+    test_list_cmd: str | None = None

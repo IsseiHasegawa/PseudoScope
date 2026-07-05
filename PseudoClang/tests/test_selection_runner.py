@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from pseudoclang.analysis import resolve_execution_plan
+from pseudoclang.analysis import (
+    map_selects_any_mutant,
+    resolve_execution_plan,
+    full_command_judges_any_mutant,
+)
 from pseudoclang.coverage_map import (
     JUDGMENT_FULL_ABSENT,
     JUDGMENT_FULL_NO_MAP,
@@ -19,14 +23,15 @@ from pseudoclang.coverage_map import (
     PlanKind,
 )
 from pseudoclang.executor import run_selected_tests, survived_without_running
-from pseudoclang.models import PseudoScopeConfig
+from pseudoclang.models import ConfigError, PseudoScopeConfig
 from pseudoclang.mutate import MutatedSource
 from pseudoclang.runner import TestRunError as RunnerError
 from pseudoclang.runner import (
     build_selected_command,
     run_selected_test_command,
+    run_test_list_command,
 )
-from pseudoclang.validation import validate_selection_options
+from pseudoclang.validation import build_config, validate_selection_options
 
 
 def _config(tmp_path: Path, **overrides) -> PseudoScopeConfig:
@@ -255,4 +260,140 @@ def test_plan_warns_on_stale_universe(tmp_path, capsys):
     plan = resolve_execution_plan(config, cov, "f")
     assert plan.kind is PlanKind.RUN_SELECTED
     err = capsys.readouterr().err
-    assert "not present in its 'tests' universe" in err
+    # The warning names an intra-map inconsistency, not live-suite staleness.
+    assert "absent from the map's own 'tests' universe" in err
+    assert "internally inconsistent" in err
+
+
+# -- preflight gating predicates --------------------------------------------
+
+
+def test_test_command_judges_when_no_map(tmp_path):
+    cfg = _config(tmp_path)
+    assert full_command_judges_any_mutant(cfg, None, ["Dict_iterNext"]) is True
+
+
+def test_test_command_judges_when_no_template(tmp_path):
+    cfg = _config(tmp_path)  # coverage map but no template -> RUN_FULL
+    assert (
+        full_command_judges_any_mutant(cfg, _coverage_map(tmp_path), ["Dict_iterNext"])
+        is True
+    )
+
+
+def test_test_command_not_judged_when_all_selected(tmp_path):
+    cfg = _config(tmp_path, test_runner_template="pytest {selection}")
+    assert (
+        full_command_judges_any_mutant(cfg, _coverage_map(tmp_path), ["Dict_iterNext"])
+        is False
+    )
+
+
+def test_test_command_judged_on_absent_fallback(tmp_path):
+    cfg = _config(tmp_path, test_runner_template="pytest {selection}")
+    assert (
+        full_command_judges_any_mutant(cfg, _coverage_map(tmp_path), ["ghost_fn"])
+        is True
+    )
+
+
+def test_test_command_judged_on_startup_only(tmp_path):
+    cfg = _config(tmp_path, test_runner_template="pytest {selection}")
+    assert (
+        full_command_judges_any_mutant(cfg, _coverage_map(tmp_path), ["PyInit_thing"])
+        is True
+    )
+
+
+def test_test_command_judged_when_any_function_runs_full(tmp_path):
+    cfg = _config(tmp_path, test_runner_template="pytest {selection}")
+    assert (
+        full_command_judges_any_mutant(
+            cfg, _coverage_map(tmp_path), ["Dict_iterNext", "ghost_fn"]
+        )
+        is True
+    )
+
+
+def test_map_selects_none_without_map(tmp_path):
+    cfg = _config(tmp_path, test_runner_template="pytest {selection}")
+    assert map_selects_any_mutant(cfg, None, ["Dict_iterNext"]) is False
+
+
+def test_map_selects_none_without_template(tmp_path):
+    cfg = _config(tmp_path)
+    assert (
+        map_selects_any_mutant(cfg, _coverage_map(tmp_path), ["Dict_iterNext"]) is False
+    )
+
+
+def test_map_selects_true_for_selected(tmp_path):
+    cfg = _config(tmp_path, test_runner_template="pytest {selection}")
+    assert (
+        map_selects_any_mutant(cfg, _coverage_map(tmp_path), ["Dict_iterNext"]) is True
+    )
+
+
+def test_map_selects_false_for_absent(tmp_path):
+    cfg = _config(tmp_path, test_runner_template="pytest {selection}")
+    assert map_selects_any_mutant(cfg, _coverage_map(tmp_path), ["ghost_fn"]) is False
+
+
+def test_map_selects_false_for_startup_only(tmp_path):
+    cfg = _config(tmp_path, test_runner_template="pytest {selection}")
+    assert (
+        map_selects_any_mutant(cfg, _coverage_map(tmp_path), ["PyInit_thing"]) is False
+    )
+
+
+# -- run_test_list_command --------------------------------------------------
+
+
+def test_run_test_list_command_returns_lines(tmp_path):
+    cfg = _config(tmp_path, test_list_cmd=r"printf 'x::a\nx::b\n'")
+    result = run_test_list_command(cfg)
+    assert result.exit_code == 0
+    assert result.stdout.splitlines() == ["x::a", "x::b"]
+
+
+def test_run_test_list_command_requires_cmd(tmp_path):
+    cfg = _config(tmp_path)  # no --test-list-cmd
+    with pytest.raises(RunnerError):
+        run_test_list_command(cfg)
+
+
+# -- validation: --test-list-cmd requires --coverage-map --------------------
+
+
+def test_test_list_cmd_requires_coverage_map(tmp_path):
+    with pytest.raises(ConfigError):
+        build_config(
+            project_root_source_dir=str(tmp_path),
+            file=None,
+            function=None,
+            test_command="pytest",
+            output_dir=None,
+            output_file=None,
+            timeout=30,
+            mode=None,
+            lang=None,
+            test_list_cmd="pytest --collect-only",
+        )
+
+
+def test_test_list_cmd_ok_with_coverage_map(tmp_path):
+    cfg = build_config(
+        project_root_source_dir=str(tmp_path),
+        file=None,
+        function=None,
+        test_command="pytest",
+        output_dir=None,
+        output_file=None,
+        timeout=30,
+        mode=None,
+        lang=None,
+        coverage_map="cov.json",
+        test_list_cmd="pytest --collect-only",
+    )
+    assert cfg.test_list_cmd == "pytest --collect-only"
+    assert cfg.coverage_map_path is not None

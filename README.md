@@ -39,7 +39,7 @@ pip install -e .
 
 **Note:** Run `python -m pseudoscope` from the **repo root** (`PesudoScope/`), not from `ultrajson/`. Deactivate `ultrajson/.venv` before using the PseudoScope venv.
 
-For C extensions, **include a build** in `--test-command` (e.g. `pip install -e . && pytest`). `pytest` alone may load a stale `.so` and produce false PASS results.
+For C extensions, **include a build** in `--test-command` (e.g. `pip install -e . && pytest`). `pytest` alone may load a stale `.so` and produce false PASS results. PseudoClang now enforces this at runtime: a preflight injects a compile error and rejects a `--test-command` (or `--test-runner-template`) that still passes, i.e. one that does not rebuild the target. Pass `--skip-runner-check` to bypass.
 
 ---
 
@@ -49,11 +49,13 @@ For C extensions, **include a build** in `--test-command` (e.g. `pip install -e 
 
 The CLI is split into stages so you can re-run only what changed. After improving your test suite, re-run just `analyze` to re-check the same functions without rebuilding the (expensive) pstrace coverage map.
 
+> **Caveat when reusing a map with `--test-runner-template`:** a reused map only knows the tests captured when it was built. Re-running `analyze` reflects a *strengthened existing* test (same nodeid), but a test you **add** since is not in the map, so it never runs against a mutant and a genuinely-fixed function can still be reported pseudo-tested. After **adding** tests, rebuild the map (`coverage-map` / `--refresh-coverage-map`). Pass `--test-list-cmd` (a command that prints the current test nodeids) to be warned at runtime about tests the map is missing.
+
 | Sub-command | Does | Typical use |
 |-------------|------|-------------|
 | `run` (default) | Full pipeline: build the coverage map if needed, then analyze | First run, or when nothing is cached |
 | `coverage-map` | Only (re)builds the pstrace coverage map, then exits | Regenerate the map after the source under test changes |
-| `analyze` | Only runs mutation analysis, reusing an existing map (never rebuilds it) | Re-check after improving tests; skips pstrace |
+| `analyze` | Only runs mutation analysis, reusing an existing map (never rebuilds it) | Re-check after **strengthening existing** tests; rebuild the map after **adding** tests (see caveat above); skips pstrace |
 | `restore` | Undo any mutation a crashed run left in the target project | Recover after a hard crash (`kill -9`, power loss) |
 
 ```bash
@@ -64,11 +66,17 @@ python -m pseudoclang coverage-map \
   --pstrace-module ujson --pstrace-src-root src/ujson \
   --pstrace-build-cmd "pip install -e ." --pstrace-test-cmd "python -m pytest"
 
-# Improve tests, then re-check WITHOUT rebuilding the map
+# Improve tests, then re-check WITHOUT rebuilding the map.
+# --test-command must rebuild the extension (a stale .so makes every function
+# look pseudo-tested, and the preflight will reject a command that skips it).
+# --test-list-cmd lets PseudoClang warn if you ADDED tests the reused map lacks.
 python -m pseudoclang analyze \
   --project-root-source-dir ultrajson \
   --file src/ujson/python/objToJSON.c --function objToJSON \
-  --test-command "pytest" --coverage-map output/coverage-map.json
+  --test-command "pip install -e . -q && pytest" \
+  --coverage-map output/coverage-map.json \
+  --test-runner-template "pip install -e . -q && pytest {selection}" \
+  --test-list-cmd "python -m pytest --collect-only -q | grep '::'"
 ```
 
 The sub-command is optional: omitting it (the plain `python -m pseudoclang --project-root-source-dir ...` form below) runs `run`, so existing commands keep working.
@@ -98,7 +106,8 @@ python -m pseudoclang restore --dry-run  # preview what would be restored
 | `--refresh-coverage-map` | no | off | Regenerate the coverage map even if the file exists; requires `--coverage-map-cmd` |
 | `--test-runner-template` | no | — | Command template with `{selection}` for running a test subset (e.g. `pytest {selection}`) |
 | `--assume-coverage-complete` | no | off | Treat functions absent from the map as untested (skip mutants); requires `--coverage-map` |
-| `--skip-runner-check` | no | off | Skip preflight rebuild check when `--coverage-map` and `--test-runner-template` are both set |
+| `--test-list-cmd` | no | — | Shell command printing the current test nodeids (one per line, map format), e.g. `pytest --collect-only -q \| grep '::'`. Warns when a reused map is missing current tests; requires `--coverage-map` |
+| `--skip-runner-check` | no | off | Skip the preflight rebuild checks (both `--test-command` and `--test-runner-template` must rebuild the target; a command that skips the build tests a stale binary and mislabels every function pseudo-tested) |
 | `--mode` / `--lang` | no | — | Reserved (unused) |
 
 By default, results are written under PseudoClang's own `output/` directory (and the auto-generated pstrace coverage map under `output/coverage-map.json`), so a run leaves the target project's tree untouched. Pass `--output-dir` to redirect; a relative `--output-dir` resolves under `--project-root-source-dir` (e.g. `--output-dir . --output-file foo.json` → `ultrajson/foo.json`).
