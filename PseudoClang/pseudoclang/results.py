@@ -66,6 +66,48 @@ def display_status(status: str) -> str:
     return labels.get(status, status)
 
 
+def _exit_display(result: MutationRunResult) -> str:
+    if result.timed_out:
+        return "timeout"
+    return "-" if result.exit_code is None else str(result.exit_code)
+
+
+def mutant_detail_lines(
+    result: MutationRunResult, *, level: int, tail: int = 20
+) -> list[str]:
+    """Verbose per-mutant lines for a given verbosity ``level``.
+
+    ``level >= 2`` (verbose) adds one line with the mutant's exit code, runtime,
+    and status. ``level >= 3`` (trace) also adds the exact command run and the
+    last ``tail`` lines of its captured stdout/stderr. Returns an empty list
+    below verbose so callers can print unconditionally. Pure (no I/O).
+    """
+    from pseudoclang.reporting import tail_lines
+
+    lines: list[str] = []
+    if level < 2:
+        return lines
+
+    label = replacement_return_line(result.replacement_body)
+    lines.append(
+        f"      {label} -> {display_status(result.status)} "
+        f"(exit {_exit_display(result)}, {result.runtime_seconds:.2f}s)"
+    )
+    if level < 3:
+        return lines
+
+    if result.test_command:
+        lines.append(f"        $ {result.test_command}")
+    for name, text in (("stdout", result.stdout), ("stderr", result.stderr)):
+        shown, total = tail_lines(text, tail)
+        if not shown:
+            continue
+        clipped = "" if total <= len(shown) else f" (last {len(shown)} of {total})"
+        lines.append(f"        {name}{clipped}:")
+        lines.extend(f"          {line}" for line in shown)
+    return lines
+
+
 _TABLE_COLUMN_KEYS = ("file_path", "function", "mutant", "test_result")
 _TABLE_HEADERS = ("File", "Function", "Mutant", "Test result")
 

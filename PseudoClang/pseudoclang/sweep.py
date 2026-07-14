@@ -17,9 +17,11 @@ from pseudoclang.coverage_map import CoverageMap
 from pseudoclang.discover import DiscoverError, DiscoveredFunction, discover_functions
 from pseudoclang.executor import STATUS_UNCOMPILABLE
 from pseudoclang.models import PseudoScopeConfig
+from pseudoclang import reporting
 from pseudoclang.results import (
     ResultWriteError,
     build_file_sweep_result,
+    mutant_detail_lines,
     partial_output_path,
     write_json_result,
 )
@@ -109,8 +111,12 @@ def run_file_sweep(
             if interrupted:
                 break
 
-            print()
-            print(f"[{index}/{len(discovered)}] Function: {item.name} (line {item.start_line})")
+            reporting.chatty(config, "")
+            reporting.chatty(
+                config,
+                f"[{index}/{len(discovered)}] Function: {item.name} "
+                f"(line {item.start_line})",
+            )
 
             outcome = analyze_function(
                 config,
@@ -127,7 +133,7 @@ def run_file_sweep(
                 write_json_result(partial, partial_path)
                 raise SweepAbortError(outcome.critical_error)
 
-            _print_function_outcome(outcome)
+            _print_function_outcome(config, outcome)
 
             partial = _build_result(completed=False)
             write_json_result(partial, partial_path)
@@ -167,7 +173,11 @@ def _try_promote_partial(partial_path: Path, output_path: Path) -> None:
         )
 
 
-def _print_function_outcome(outcome: FunctionAnalysisOutcome) -> None:
+def _print_function_outcome(
+    config: PseudoScopeConfig, outcome: FunctionAnalysisOutcome
+) -> None:
+    if reporting.is_quiet(config):
+        return
     if outcome.status == "skipped":
         print(f"  Skipped ({outcome.reason})")
         return
@@ -182,3 +192,14 @@ def _print_function_outcome(outcome: FunctionAnalysisOutcome) -> None:
     suffix = f", UNCOMPILABLE: {uncompilable}" if uncompilable else ""
     print(f"  Mutations: {len(outcome.mutation_results)} "
           f"(PASS: {survived}, FAIL: {killed}{suffix})")
+
+    if outcome.judgment:
+        selected = (
+            f" via {len(outcome.selected_tests)} selected test(s)"
+            if outcome.selected_tests
+            else ""
+        )
+        reporting.detail(config, f"    plan: {outcome.judgment}{selected}")
+    for result in outcome.mutation_results:
+        for line in mutant_detail_lines(result, level=config.verbosity):
+            print(line)

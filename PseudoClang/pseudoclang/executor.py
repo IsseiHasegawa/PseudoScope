@@ -58,6 +58,9 @@ class MutationRunResult:
     runtime_seconds: float
     status: str
     restored: bool
+    # The exact shell command run for this mutant (empty when no test ran, e.g.
+    # a SKIP_AS_SURVIVED synthesis). Surfaced only at trace verbosity.
+    test_command: str = ""
 
 
 #: Per-mutant status for a mutant that failed to compile (a.k.a. SKIPPED). It is
@@ -136,6 +139,7 @@ def _mutation_run_result(
         runtime_seconds=test_result.runtime_seconds,
         status=_status_from_test_result(test_result, source_name=mutation.path.name),
         restored=restored,
+        test_command=test_result.test_command,
     )
 
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from pseudoclang import backup
+from pseudoclang import reporting
 from pseudoclang import snapshots
 from pseudoclang.locate import (
     FunctionBodyLocation,
@@ -68,6 +69,7 @@ from pseudoclang.results import (
     build_function_analysis_result,
     display_status,
     format_result_table,
+    mutant_detail_lines,
     write_json_result,
 )
 from pseudoclang.sweep import SweepAbortError, run_file_sweep
@@ -180,6 +182,22 @@ def _add_analysis_core_args(parser: argparse.ArgumentParser) -> None:
             "List them with `pseudoclang snapshots`; roll back with "
             "`pseudoclang restore --snapshot N`."
         ),
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Show more detail. Repeatable: -v adds the per-function plan and "
+             "each mutant's exit code/runtime; -vv also prints each mutant's "
+             "exact command and the tail of its captured stdout/stderr.",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress progress narration; print only errors and the final "
+             "result summary. Overrides -v.",
     )
 
 
@@ -496,6 +514,11 @@ def _build_config_from_args(args: argparse.Namespace) -> PseudoScopeConfig:
         max_snapshots=snapshots.resolve_max_snapshots(
             getattr(args, "max_snapshots", None)
         ),
+        verbosity=(
+            0
+            if getattr(args, "quiet", False)
+            else 1 + getattr(args, "verbose", 0)
+        ),
         pstrace_module=getattr(args, "pstrace_module", None),
         pstrace_src_root=getattr(args, "pstrace_src_root", None),
         pstrace_build_cmd=getattr(args, "pstrace_build_cmd", None),
@@ -510,6 +533,8 @@ def _build_config_from_args(args: argparse.Namespace) -> PseudoScopeConfig:
 
 def print_config_summary(config: PseudoScopeConfig) -> None:
     """Print a human-readable summary of the validated configuration."""
+    if reporting.is_quiet(config):
+        return
     print("PseudoClang configuration loaded successfully.")
     print()
     print(f"Project root: {config.project_root}")
@@ -533,8 +558,10 @@ def print_config_summary(config: PseudoScopeConfig) -> None:
             print(f"Test runner template: {config.test_runner_template}")
 
 
-def print_source_summary(source: SourceFile) -> None:
+def print_source_summary(config: PseudoScopeConfig, source: SourceFile) -> None:
     """Print a short summary after the source file is loaded (no file contents)."""
+    if reporting.is_quiet(config):
+        return
     print()
     print("Source file loaded successfully.")
     print(f"Source lines: {source.line_count}")
@@ -563,13 +590,17 @@ def capture_recovery_point(config: PseudoScopeConfig, source: SourceFile) -> Non
         max_snapshots=config.max_snapshots,
     )
     if snapshot is not None:
-        print()
-        print(f"Recovery point: snapshot {snapshot.sequence} at {snapshot.path}")
+        reporting.chatty(config, "")
+        reporting.chatty(
+            config, f"Recovery point: snapshot {snapshot.sequence} at {snapshot.path}"
+        )
 
 
-def print_mutations_summary(mutations: list[MutatedSource]) -> None:
+def print_mutations_summary(
+    config: PseudoScopeConfig, mutations: list[MutatedSource]
+) -> None:
     """Print a short summary after default-return mutations are generated."""
-    if not mutations:
+    if reporting.is_quiet(config) or not mutations:
         return
     first = mutations[0]
     print()
@@ -582,8 +613,16 @@ def print_mutations_summary(mutations: list[MutatedSource]) -> None:
         print(f"  - {replacement_return_line(mutation.replacement_body)}")
 
 
-def print_mutation_tests_summary(results: list[MutationRunResult]) -> None:
-    """Print a short summary after all mutation tests complete."""
+def print_mutation_tests_summary(
+    config: PseudoScopeConfig, results: list[MutationRunResult]
+) -> None:
+    """Print a short summary after all mutation tests complete.
+
+    At verbose (``-v``) each result carries an extra line with its exit code and
+    runtime; at trace (``-vv``) also its command and captured-output tail.
+    """
+    if reporting.is_quiet(config):
+        return
     pass_count = sum(1 for item in results if item.status == "survived")
     fail_count = sum(1 for item in results if item.status == "killed")
     timeout_count = sum(1 for item in results if item.status == "timeout")
@@ -609,6 +648,8 @@ def print_mutation_tests_summary(results: list[MutationRunResult]) -> None:
         )
         status_label = display_status(result.status)
         print(f"  - {label} -> {status_label}, exit code {exit_display}")
+        for line in mutant_detail_lines(result, level=config.verbosity):
+            print(line)
 
 
 def baseline_test_succeeded(baseline: TestRunResult) -> bool:
@@ -664,15 +705,29 @@ def print_result_table(result: dict[str, Any]) -> None:
     print(format_result_table(result))
 
 
-def print_baseline_test_summary(result: TestRunResult) -> None:
+def print_baseline_test_summary(
+    config: PseudoScopeConfig, result: TestRunResult
+) -> None:
     """Print a short summary after the baseline test command runs."""
+    if reporting.is_quiet(config):
+        return
     print()
     print("Baseline test command executed.")
+    reporting.detail(config, f"  $ {result.test_command}")
     print(f"Exit code: {result.exit_code}")
     print(f"Timed out: {result.timed_out}")
     print(f"Runtime: {result.runtime_seconds:.2f} seconds")
     print(f"Stdout characters: {len(result.stdout)}")
     print(f"Stderr characters: {len(result.stderr)}")
+    if reporting.is_trace(config):
+        for name, text in (("stdout", result.stdout), ("stderr", result.stderr)):
+            shown, total = reporting.tail_lines(text)
+            if not shown:
+                continue
+            clipped = "" if total <= len(shown) else f" (last {len(shown)} of {total})"
+            print(f"  {name}{clipped}:")
+            for line in shown:
+                print(f"    {line}")
 
 
 def print_location_summary(location: FunctionBodyLocation) -> None:
@@ -802,9 +857,11 @@ def generate_coverage_map(config: PseudoScopeConfig) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "PSEUDOCLANG_COVERAGE_MAP": str(out_path)}
 
-    print()
-    print(f"Generating coverage map via --coverage-map-cmd -> {out_path}")
-    print(f"  $ {config.coverage_map_cmd}")
+    reporting.chatty(config, "")
+    reporting.chatty(
+        config, f"Generating coverage map via --coverage-map-cmd -> {out_path}"
+    )
+    reporting.chatty(config, f"  $ {config.coverage_map_cmd}")
     completed = subprocess.run(config.coverage_map_cmd, shell=True, env=env)
     if completed.returncode != 0:
         raise CoverageMapError(
@@ -833,10 +890,11 @@ def load_coverage_map_for_run(config: PseudoScopeConfig) -> CoverageMap | None:
         if config.refresh_coverage_map or not config.coverage_map_path.exists():
             generate_coverage_map(config)
         else:
-            print()
-            print(
+            reporting.chatty(config, "")
+            reporting.chatty(
+                config,
                 f"Reusing existing coverage map: {config.coverage_map_path} "
-                "(pass --refresh-coverage-map to regenerate)."
+                "(pass --refresh-coverage-map to regenerate).",
             )
 
     coverage_map = load_coverage_map(config.coverage_map_path)
@@ -845,9 +903,13 @@ def load_coverage_map_for_run(config: PseudoScopeConfig) -> CoverageMap | None:
 
     verify_project_root(coverage_map, config.project_root)
 
-    print()
-    print(f"Coverage map loaded: {config.coverage_map_path}")
-    print(f"  schema: pstrace-coverage/1, tests universe: {len(coverage_map.universe())}")
+    reporting.chatty(config, "")
+    reporting.chatty(config, f"Coverage map loaded: {config.coverage_map_path}")
+    reporting.chatty(
+        config,
+        f"  schema: pstrace-coverage/1, tests universe: "
+        f"{len(coverage_map.universe())}",
+    )
     if config.test_runner_template is None:
         print(
             "Warning: --coverage-map provided without --test-runner-template; "
@@ -905,7 +967,7 @@ def run_file_sweep_mode(
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print_source_summary(source)
+    print_source_summary(config, source)
     capture_recovery_point(config, source)
 
     try:
@@ -914,10 +976,13 @@ def run_file_sweep_mode(
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print()
-    print(f"Discovered {len(discovered)} function(s) in {config.relative_file_path}:")
+    reporting.chatty(config, "")
+    reporting.chatty(
+        config,
+        f"Discovered {len(discovered)} function(s) in {config.relative_file_path}:",
+    )
     for item in discovered:
-        print(f"  - {item.name} (line {item.start_line})")
+        reporting.chatty(config, f"  - {item.name} (line {item.start_line})")
 
     if discovered:
         try:
@@ -974,7 +1039,7 @@ def _run_analysis(config: PseudoScopeConfig) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print_source_summary(source)
+    print_source_summary(config, source)
     capture_recovery_point(config, source)
 
     try:
@@ -983,7 +1048,8 @@ def _run_analysis(config: PseudoScopeConfig) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print_location_summary(location)
+    if not reporting.is_quiet(config):
+        print_location_summary(location)
 
     try:
         mutations = run_step_generate_mutations(source, location)
@@ -991,7 +1057,7 @@ def _run_analysis(config: PseudoScopeConfig) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print_mutations_summary(mutations)
+    print_mutations_summary(config, mutations)
 
     try:
         baseline = run_step_run_baseline_test(config)
@@ -999,7 +1065,7 @@ def _run_analysis(config: PseudoScopeConfig) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print_baseline_test_summary(baseline)
+    print_baseline_test_summary(config, baseline)
 
     mutation_results: list[MutationRunResult] = []
     classification_override: str | None = None
@@ -1014,7 +1080,7 @@ def _run_analysis(config: PseudoScopeConfig) -> int:
         except MutationExecutionError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
-        print_mutation_tests_summary(mutation_results)
+        print_mutation_tests_summary(config, mutation_results)
     else:
         classification_override = "baseline_failed"
         print(

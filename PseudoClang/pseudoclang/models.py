@@ -50,3 +50,6 @@ class PseudoScopeConfig:
     # How many pre-mutation recovery-point snapshots to retain (0 disables the
     # history). Resolved from --max-snapshots / PSEUDOCLANG_MAX_SNAPSHOTS.
     max_snapshots: int = 5
+    # Console verbosity: 0 quiet, 1 normal (default), 2 verbose, 3 trace.
+    # Resolved from -v/--verbose (repeatable) and -q/--quiet.
+    verbosity: int = 1

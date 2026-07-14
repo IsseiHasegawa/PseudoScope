@@ -122,6 +122,8 @@ Unlike crash `restore`, `restore --snapshot N` is an explicit rollback: it overw
 | `--test-list-cmd` | no | — | Shell command printing the current test nodeids (one per line, map format), e.g. `pytest --collect-only -q \| grep '::'`. Warns when a reused map is missing current tests; requires `--coverage-map` |
 | `--skip-runner-check` | no | off | Skip the preflight rebuild checks (both `--test-command` and `--test-runner-template` must rebuild the target; a command that skips the build tests a stale binary and mislabels every function pseudo-tested) |
 | `--max-snapshots` | no | `5` (or `$PSEUDOCLANG_MAX_SNAPSHOTS`) | Recovery points to keep as history; `0` disables it. List with `snapshots`, roll back with `restore --snapshot N` |
+| `-v` / `--verbose` | no | off | More detail (repeatable). `-v`: per-function plan + each mutant's exit code/runtime. `-vv`: also each mutant's exact command and the tail of its captured stdout/stderr |
+| `-q` / `--quiet` | no | off | Suppress progress narration; print only errors and the final result summary. Overrides `-v` |
 | `--mode` / `--lang` | no | — | Reserved (unused) |
 
 By default, results are written under PseudoClang's own `output/` directory (and the auto-generated pstrace coverage map under `output/coverage-map.json`), so a run leaves the target project's tree untouched. Pass `--output-dir` to redirect; a relative `--output-dir` resolves under `--project-root-source-dir` (e.g. `--output-dir . --output-file foo.json` → `ultrajson/foo.json`).
