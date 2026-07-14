@@ -47,3 +47,6 @@ class PseudoScopeConfig:
     # unset, that staleness check falls back to an advisory (the tool is
     # runner-agnostic and cannot otherwise enumerate the live suite).
     test_list_cmd: str | None = None
+    # How many pre-mutation recovery-point snapshots to retain (0 disables the
+    # history). Resolved from --max-snapshots / PSEUDOCLANG_MAX_SNAPSHOTS.
+    max_snapshots: int = 5

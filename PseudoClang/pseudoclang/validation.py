@@ -230,6 +230,7 @@ def build_config(
     refresh_coverage_map: bool = False,
     skip_runner_check: bool = False,
     test_list_cmd: str | None = None,
+    max_snapshots: int = 5,
     pstrace_module: str | None = None,
     pstrace_src_root: str | None = None,
     pstrace_build_cmd: str | None = None,
@@ -363,4 +364,5 @@ def build_config(
         refresh_coverage_map=refresh_coverage_map,
         skip_runner_check=skip_runner_check,
         test_list_cmd=test_list_value,
+        max_snapshots=max(0, max_snapshots),
     )

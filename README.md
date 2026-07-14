@@ -57,6 +57,7 @@ The CLI is split into stages so you can re-run only what changed. After improvin
 | `coverage-map` | Only (re)builds the pstrace coverage map, then exits | Regenerate the map after the source under test changes |
 | `analyze` | Only runs mutation analysis, reusing an existing map (never rebuilds it) | Re-check after **strengthening existing** tests; rebuild the map after **adding** tests (see caveat above); skips pstrace |
 | `restore` | Undo any mutation a crashed run left in the target project | Recover after a hard crash (`kill -9`, power loss) |
+| `snapshots` | List the retained pre-mutation recovery points (source history) | See past run states; find a snapshot to roll back to |
 
 ```bash
 # Build the map once (pstrace)
@@ -92,6 +93,18 @@ python -m pseudoclang restore --dry-run  # preview what would be restored
 
 `restore` only reverts files still in the exact mutated state it left them in; a file you edited (or deleted) since is skipped unless you pass `--force`. A clean run leaves nothing to restore. Set `PSEUDOCLANG_BACKUPS_DIR` to relocate the backup store (or `--backups-dir` on `restore`).
 
+#### Recovery-point history (snapshots)
+
+The crash backup above is cleared as soon as its source is restored, so it cannot take you back to how a file looked before an *earlier* run. For that, each `run`/`analyze` saves the pristine source as a numbered **recovery point** under `output/snapshots/` before mutating it. The most recent `--max-snapshots` (default 5) are kept; older ones are deleted automatically, so the history stays bounded. Identical content is not re-snapshotted, so re-running without editing does not fill the history with copies.
+
+```bash
+python -m pseudoclang snapshots              # list retained recovery points
+python -m pseudoclang restore --snapshot 3   # roll those files back to snapshot 3
+python -m pseudoclang restore --snapshot 3 --dry-run   # preview first
+```
+
+Unlike crash `restore`, `restore --snapshot N` is an explicit rollback: it overwrites the current on-disk content with the snapshot's (a file already matching is left untouched). Set `--max-snapshots 0` (or `PSEUDOCLANG_MAX_SNAPSHOTS=0`) to disable the history; `PSEUDOCLANG_SNAPSHOTS_DIR` (or `--snapshots-dir`) relocates the store.
+
 | Option | Required | Default | Description |
 |--------|----------|---------|-------------|
 | `--project-root-source-dir` | yes | — | Project root (cwd for tests) |
@@ -108,6 +121,7 @@ python -m pseudoclang restore --dry-run  # preview what would be restored
 | `--assume-coverage-complete` | no | off | Treat functions absent from the map as untested (skip mutants); requires `--coverage-map` |
 | `--test-list-cmd` | no | — | Shell command printing the current test nodeids (one per line, map format), e.g. `pytest --collect-only -q \| grep '::'`. Warns when a reused map is missing current tests; requires `--coverage-map` |
 | `--skip-runner-check` | no | off | Skip the preflight rebuild checks (both `--test-command` and `--test-runner-template` must rebuild the target; a command that skips the build tests a stale binary and mislabels every function pseudo-tested) |
+| `--max-snapshots` | no | `5` (or `$PSEUDOCLANG_MAX_SNAPSHOTS`) | Recovery points to keep as history; `0` disables it. List with `snapshots`, roll back with `restore --snapshot N` |
 | `--mode` / `--lang` | no | — | Reserved (unused) |
 
 By default, results are written under PseudoClang's own `output/` directory (and the auto-generated pstrace coverage map under `output/coverage-map.json`), so a run leaves the target project's tree untouched. Pass `--output-dir` to redirect; a relative `--output-dir` resolves under `--project-root-source-dir` (e.g. `--output-dir . --output-file foo.json` → `ultrajson/foo.json`).
@@ -159,12 +173,15 @@ python -m pseudoclang \
   --project-root-source-dir ultrajson \
   --test-command "source .venv/bin/activate && pip install -e . -q && python -m pytest -q" \
   --test-runner-template "source .venv/bin/activate && pip install -e . -q && python -m pytest -q {selection}" \
+  --test-list-cmd "python -m pytest --collect-only -q | grep '::'" \
   --pstrace-module ujson \
   --pstrace-src-root src/ujson \
-  --pstrace-build-cmd "python setup.py build_ext --inplace --force" \
+  --pstrace-build-cmd "pip install -e ." \
   --pstrace-test-cmd "python -m pytest tests/" \
   --pstrace-python ultrajson/.venv/bin/python \
-  --output-file sweep-objToJSON.json
+  --output-file ultrajson-objToJSON-sweep.json
+
+  
 ```
 
 #7 Apply PseudoClang to ultrajson (JSONtoObj.c)

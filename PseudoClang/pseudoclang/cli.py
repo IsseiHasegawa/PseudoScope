@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from pseudoclang import backup
+from pseudoclang import snapshots
 from pseudoclang.locate import (
     FunctionBodyLocation,
     FunctionLocateError,
@@ -81,7 +82,13 @@ from pseudoclang.validation import (
 DEFAULT_TIMEOUT_SECONDS = 60
 
 
-COMMANDS: tuple[str, ...] = ("run", "coverage-map", "analyze", "restore")
+COMMANDS: tuple[str, ...] = (
+    "run",
+    "coverage-map",
+    "analyze",
+    "restore",
+    "snapshots",
+)
 
 
 def _add_project_root_arg(parser: argparse.ArgumentParser) -> None:
@@ -161,6 +168,18 @@ def _add_analysis_core_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         metavar="LANG",
         help="Source language hint (stub; reserved for future use).",
+    )
+    parser.add_argument(
+        "--max-snapshots",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "How many pre-mutation recovery-point snapshots to keep as history "
+            "(default: 5, or $PSEUDOCLANG_MAX_SNAPSHOTS). 0 disables the history. "
+            "List them with `pseudoclang snapshots`; roll back with "
+            "`pseudoclang restore --snapshot N`."
+        ),
     )
 
 
@@ -343,7 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(
         dest="command",
-        metavar="{run,coverage-map,analyze}",
+        metavar="{run,coverage-map,analyze,restore,snapshots}",
         help="Stage to run (default: run when omitted).",
     )
 
@@ -400,6 +419,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite even a file edited since (or recreate a deleted one). "
              "Default: skip such files so no unrelated change is clobbered.",
     )
+    restore_parser.add_argument(
+        "--snapshot",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Roll the files captured in recovery-point snapshot N back to their "
+             "saved state (see `pseudoclang snapshots`) instead of undoing a "
+             "crashed run. Overwrites current content; combine with --dry-run to "
+             "preview.",
+    )
+    restore_parser.add_argument(
+        "--snapshots-dir",
+        default=None,
+        metavar="PATH",
+        help="Snapshots directory to read (default: PseudoClang's "
+             "output/snapshots). Used with --snapshot.",
+    )
+
+    snapshots_parser = subparsers.add_parser(
+        "snapshots",
+        help="List the retained pre-mutation recovery-point snapshots "
+             "(the source history a run can be rolled back to).",
+    )
+    snapshots_parser.add_argument(
+        "--snapshots-dir",
+        default=None,
+        metavar="PATH",
+        help="Snapshots directory to read (default: PseudoClang's "
+             "output/snapshots).",
+    )
 
     return parser
 
@@ -444,6 +493,9 @@ def _build_config_from_args(args: argparse.Namespace) -> PseudoScopeConfig:
         refresh_coverage_map=getattr(args, "refresh_coverage_map", False),
         skip_runner_check=getattr(args, "skip_runner_check", False),
         test_list_cmd=getattr(args, "test_list_cmd", None),
+        max_snapshots=snapshots.resolve_max_snapshots(
+            getattr(args, "max_snapshots", None)
+        ),
         pstrace_module=getattr(args, "pstrace_module", None),
         pstrace_src_root=getattr(args, "pstrace_src_root", None),
         pstrace_build_cmd=getattr(args, "pstrace_build_cmd", None),
@@ -487,6 +539,32 @@ def print_source_summary(source: SourceFile) -> None:
     print("Source file loaded successfully.")
     print(f"Source lines: {source.line_count}")
     print(f"Encoding: {source.encoding}")
+
+
+def capture_recovery_point(config: PseudoScopeConfig, source: SourceFile) -> None:
+    """Snapshot the pristine source as a recovery point before it is mutated.
+
+    Best effort and non-fatal: the history must never break a run, so a capture
+    that cannot be written is silently skipped (``create_snapshot`` swallows disk
+    errors and returns ``None``).
+    """
+    if config.max_snapshots <= 0:
+        return
+    try:
+        original_bytes = source.content.encode(source.encoding)
+    except (LookupError, UnicodeError):
+        original_bytes = source.content.encode("utf-8")
+    label = str(source.relative_path)
+    if config.function_name:
+        label += f" ({config.function_name})"
+    snapshot = snapshots.create_snapshot(
+        [(source.path, original_bytes)],
+        label=label,
+        max_snapshots=config.max_snapshots,
+    )
+    if snapshot is not None:
+        print()
+        print(f"Recovery point: snapshot {snapshot.sequence} at {snapshot.path}")
 
 
 def print_mutations_summary(mutations: list[MutatedSource]) -> None:
@@ -828,6 +906,7 @@ def run_file_sweep_mode(
         return 1
 
     print_source_summary(source)
+    capture_recovery_point(config, source)
 
     try:
         discovered = discover_functions(source)
@@ -896,6 +975,7 @@ def _run_analysis(config: PseudoScopeConfig) -> int:
         return 1
 
     print_source_summary(source)
+    capture_recovery_point(config, source)
 
     try:
         location = run_step_locate_function(source, config.function_name)
@@ -1015,8 +1095,48 @@ _RESTORE_STATUS_LABELS = {
 }
 
 
+def _run_snapshot_restore(args: argparse.Namespace) -> int:
+    """``restore --snapshot N``: roll files back to recovery-point snapshot N."""
+    snapshots_dir = (
+        Path(args.snapshots_dir).expanduser().resolve()
+        if args.snapshots_dir
+        else None
+    )
+    outcomes = snapshots.restore_snapshot(
+        args.snapshot, dry_run=args.dry_run, snapshots_dir=snapshots_dir
+    )
+    if not outcomes:
+        print(f"No snapshot with sequence {args.snapshot}. Run `pseudoclang snapshots`.")
+        return 1
+
+    prefix = "[dry-run] " if args.dry_run else ""
+    unresolved = 0
+    for outcome in outcomes:
+        label = _RESTORE_STATUS_LABELS.get(outcome.status, outcome.status)
+        line = f"  {prefix}{outcome.target}: {label}"
+        if outcome.detail:
+            line += f" ({outcome.detail})"
+        print(line)
+        if not outcome.resolved:
+            unresolved += 1
+
+    print()
+    resolved = len(outcomes) - unresolved
+    if args.dry_run:
+        print(f"Snapshot {args.snapshot}: would roll back {resolved}, skip {unresolved}.")
+        return 0
+    print(
+        f"Snapshot {args.snapshot}: rolled back {resolved} of {len(outcomes)}; "
+        f"{unresolved} left untouched."
+    )
+    return 1 if unresolved else 0
+
+
 def _run_restore_command(args: argparse.Namespace) -> int:
     """The ``restore`` stage: undo any mutation a crashed run left on disk."""
+    if getattr(args, "snapshot", None) is not None:
+        return _run_snapshot_restore(args)
+
     project_root = None
     if args.project_root_source_dir:
         try:
@@ -1059,6 +1179,46 @@ def _run_restore_command(args: argparse.Namespace) -> int:
     return 1 if unresolved else 0
 
 
+def _run_snapshots_command(args: argparse.Namespace) -> int:
+    """The ``snapshots`` stage: list the retained recovery-point history."""
+    snapshots_dir = (
+        Path(args.snapshots_dir).expanduser().resolve()
+        if args.snapshots_dir
+        else None
+    )
+    history = snapshots.list_snapshots(snapshots_dir)
+    if not history:
+        print("No recovery-point snapshots yet.")
+        return 0
+
+    print(f"Recovery-point snapshots (newest last), {len(history)} retained:")
+    print()
+    for snap in history:
+        print(f"  [{snap.sequence}] {snap.created_at}  {snap.label}")
+        for item in snap.files:
+            state = _snapshot_file_state(item)
+            print(f"        {item.target}  ({state})")
+    print()
+    latest = history[-1].sequence
+    print(f"Roll back with: pseudoclang restore --snapshot {latest}")
+    return 0
+
+
+def _snapshot_file_state(item: snapshots.SnapshotFile) -> str:
+    """Whether the on-disk file still matches this snapshot's saved content."""
+    try:
+        current = item.target.read_bytes()
+    except OSError:
+        return "missing on disk"
+    return "unchanged" if _sha256_bytes(current) == item.sha256 else "differs from now"
+
+
+def _sha256_bytes(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point: dispatch a stage sub-command (default: ``run``).
 
@@ -1077,6 +1237,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if command == "restore":
         return _run_restore_command(args)
+
+    if command == "snapshots":
+        return _run_snapshots_command(args)
 
     # run / analyze both run mutation analysis; they differ only in flags, so
     # analyze has no map-generation options and always reuses an existing map.
