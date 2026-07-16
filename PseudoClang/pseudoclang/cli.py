@@ -633,7 +633,7 @@ def print_mutation_tests_summary(
     print()
     print("Mutation tests executed.")
     print(f"Total mutations: {len(results)}")
-    print(f"SURVIVED: {pass_count}")
+    print(f"SURVIVED (PT): {pass_count}")
     print(f"KILLED: {fail_count}")
     print(f"TIMEOUT: {timeout_count}")
     print(f"UNCOMPILABLE (skipped): {uncompilable_count}")
@@ -669,7 +669,7 @@ def print_json_result_summary(result: dict[str, Any]) -> None:
         print(f"Processed: {summary['processed']}")
         print(f"Analyzed: {summary['analyzed']}")
         print(f"Skipped: {summary['skipped']}")
-        print(f"SURVIVED: {table_summary.get('functions_passed', 0)}")
+        print(f"SURVIVED (PT): {table_summary.get('functions_passed', 0)}")
         rate = table_summary.get("pass_rate_percent")
         if rate is not None:
             print(f"Pass rate: {rate:.1f}%")
