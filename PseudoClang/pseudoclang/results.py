@@ -58,8 +58,8 @@ def classify_function(mutation_results: list[MutationRunResult]) -> str:
 def display_status(status: str) -> str:
     """Map internal mutation test status to a user-facing label."""
     labels = {
-        "survived": "PASS (PT)",
-        "killed": "FAIL (detected)",
+        "survived": "SURVIVED",
+        "killed": "KILLED",
         "timeout": "TIMEOUT",
         STATUS_UNCOMPILABLE: "UNCOMPILABLE (skipped)",
     }
@@ -117,7 +117,7 @@ def compute_function_table_summary(result: dict[str, Any]) -> dict[str, Any]:
     Function-level counts for the results table footer.
 
     *Functions analyzed* = functions that ran mutation tests.
-    *PASS (PT)* = all mutations survived for that function.
+    *SURVIVED* = all mutations survived for that function.
     """
     if result.get("mode") == "file_sweep":
         sweep = result.get("summary", {})
@@ -219,7 +219,7 @@ def format_result_table(result: dict[str, Any]) -> str:
     lines.append("Summary (by function)")
     lines.append(f"  Discovered          : {summary['functions_discovered']}")
     lines.append(f"  Analyzed (tested)   : {summary['functions_analyzed']}")
-    lines.append(f"  PASS (PT)           : {summary['functions_passed']}")
+    lines.append(f"  SURVIVED            : {summary['functions_passed']}")
     rate = summary.get("pass_rate_percent")
     if rate is None:
         lines.append("  Pass rate           : n/a (no functions analyzed)")
