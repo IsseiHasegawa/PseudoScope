@@ -32,6 +32,10 @@ JUDGMENT_FULL_STARTUP_ONLY = "full_fallback_startup_only"
 JUDGMENT_SKIPPED_UNCOVERED = "skipped_assumed_uncovered"
 JUDGMENT_FULL_NO_MAP = "full_no_map"
 JUDGMENT_FULL_NO_TEMPLATE = "full_no_template"
+#: A SELECTED plan whose subset failed to cleanly pass against the original source
+#: (e.g. the map's nodeids no longer collect any test): degraded to a full run
+#: because the subset is not a trustworthy judge. See analysis.guard_selected_plan.
+JUDGMENT_FULL_SELECTED_UNTRUSTWORTHY = "full_fallback_selected_baseline_failed"
 
 
 class CoverageMapError(Exception):

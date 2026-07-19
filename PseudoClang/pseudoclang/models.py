@@ -53,3 +53,9 @@ class PseudoScopeConfig:
     # Console verbosity: 0 quiet, 1 normal (default), 2 verbose, 3 trace.
     # Resolved from -v/--verbose (repeatable) and -q/--quiet.
     verbosity: int = 1
+    # Re-confirm a selected-subset survivor against the full --test-command before
+    # trusting it as pseudo-tested, and validate the selected subset actually judges
+    # the function (see analysis.guard_selected_plan / executor confirmation). Guards
+    # the largest false-pseudo-tested class; disable with --no-confirm-survivors for
+    # the old fast (but map-trusting) selected path.
+    confirm_survivors: bool = True

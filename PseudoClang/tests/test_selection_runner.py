@@ -281,11 +281,33 @@ def test_test_command_judges_when_no_template(tmp_path):
     )
 
 
-def test_test_command_not_judged_when_all_selected(tmp_path):
-    cfg = _config(tmp_path, test_runner_template="pytest {selection}")
+def test_test_command_not_judged_when_all_selected_no_confirm(tmp_path):
+    # Without confirmation, a pure-selected run judges every mutant via the
+    # template, so the full --test-command judges nothing (and its rebuild probe
+    # is skipped).
+    cfg = _config(
+        tmp_path,
+        test_runner_template="pytest {selection}",
+        confirm_survivors=False,
+    )
     assert (
         full_command_judges_any_mutant(cfg, _coverage_map(tmp_path), ["Dict_iterNext"])
         is False
+    )
+
+
+def test_test_command_judged_when_confirming_selected(tmp_path):
+    # With confirmation on (the default), a selected survivor is re-judged against
+    # the full --test-command, so it must be rebuild-verified even in a pure-selected
+    # run: the predicate must report the full command judges a mutant.
+    cfg = _config(
+        tmp_path,
+        test_runner_template="pytest {selection}",
+        confirm_survivors=True,
+    )
+    assert (
+        full_command_judges_any_mutant(cfg, _coverage_map(tmp_path), ["Dict_iterNext"])
+        is True
     )
 
 

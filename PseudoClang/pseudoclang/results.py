@@ -265,7 +265,7 @@ def _baseline_payload(baseline: TestRunResult) -> dict[str, Any]:
 
 def _mutation_payload(result: MutationRunResult) -> dict[str, Any]:
     mutant = replacement_return_line(result.replacement_body)
-    return {
+    payload: dict[str, Any] = {
         "function_name": result.function_name,
         "mutation_type": result.mutation_type,
         "return_type_category": result.return_type_category,
@@ -280,6 +280,12 @@ def _mutation_payload(result: MutationRunResult) -> dict[str, Any]:
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
+    # Only present when a selected-subset survivor was re-judged against the full
+    # suite, so a run without confirmation stays byte-identical to before.
+    if result.confirmation is not None:
+        payload["selected_status"] = result.selected_status
+        payload["confirmation"] = result.confirmation
+    return payload
 
 
 def _selection_payload(

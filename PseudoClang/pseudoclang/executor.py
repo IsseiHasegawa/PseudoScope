@@ -61,6 +61,14 @@ class MutationRunResult:
     # The exact shell command run for this mutant (empty when no test ran, e.g.
     # a SKIP_AS_SURVIVED synthesis). Surfaced only at trace verbosity.
     test_command: str = ""
+    # Confirmation provenance for a selected-subset survivor re-judged against the
+    # full --test-command (see run_single_mutation_test / combine_confirmation).
+    # ``selected_status`` is the verdict from the selected subset (only set when a
+    # confirmation run followed, i.e. the subset survived); ``confirmation`` is the
+    # outcome label ("confirmed_survived" / "corrected_killed" / ...). Both None when
+    # no confirmation ran (killed subset, confirmation disabled, or a full run).
+    selected_status: str | None = None
+    confirmation: str | None = None
 
 
 #: Per-mutant status for a mutant that failed to compile (a.k.a. SKIPPED). It is
@@ -121,11 +129,41 @@ def _status_from_test_result(
     return "killed"
 
 
+#: Confirmation outcome labels, keyed by the full-suite verdict of a mutant that
+#: survived its selected subset. ``killed`` here means the map's subset missed a
+#: covering test that the full suite caught.
+_CONFIRMATION_LABELS = {
+    "survived": "confirmed_survived",
+    "killed": "corrected_killed",
+    "timeout": "inconclusive_timeout",
+}
+
+
+def combine_confirmation(
+    selected_status: str, full_status: str | None
+) -> tuple[str, str | None]:
+    """Combine a selected-subset verdict with an optional full-suite confirmation.
+
+    The confirmation run only ever happens when ``selected_status == "survived"``
+    (a subset survivor must be re-judged against the full ``--test-command`` before
+    it is trusted as pseudo-tested). Returns ``(final_status, confirmation_label)``.
+    When ``full_status`` is ``None`` no confirmation ran and the selected verdict
+    stands unlabeled. Pure and side-effect free for unit testing.
+    """
+    if full_status is None:
+        return selected_status, None
+    return full_status, _CONFIRMATION_LABELS.get(
+        full_status, f"confirmation_{full_status}"
+    )
+
+
 def _mutation_run_result(
     mutation: MutatedSource,
     test_result: TestRunResult,
     *,
     restored: bool,
+    selected_status: str | None = None,
+    confirmation: str | None = None,
 ) -> MutationRunResult:
     return MutationRunResult(
         function_name=mutation.function_name,
@@ -140,6 +178,8 @@ def _mutation_run_result(
         status=_status_from_test_result(test_result, source_name=mutation.path.name),
         restored=restored,
         test_command=test_result.test_command,
+        selected_status=selected_status,
+        confirmation=confirmation,
     )
 
 
@@ -201,11 +241,19 @@ def run_single_mutation_test(
     nodeids run; otherwise the full ``config.test_command`` runs. Raises
     :class:`MutationExecutionError` on write, test start, or restore failure.
     Restore failures use a message marked as critical.
+
+    On the selected path, a mutant that survives its subset is re-judged against
+    the full ``config.test_command`` (while still on disk) when
+    ``config.confirm_survivors`` is set: the map's subset may have missed a
+    covering test, so a lone-subset survival is not trusted until the full suite
+    confirms it. A full-suite kill corrects the verdict to ``killed``.
     """
     install_backstop()
     written = False
     restored = False
     test_result: TestRunResult | None = None
+    selected_status: str | None = None
+    confirmation: str | None = None
     run_selected = (
         execution_plan is not None and execution_plan.kind is PlanKind.RUN_SELECTED
     )
@@ -234,6 +282,26 @@ def run_single_mutation_test(
                 test_result = run_selected_test_command(
                     config, execution_plan.nodeids
                 )
+                # A subset survivor is not trusted until the full suite confirms
+                # it: the map may have missed a covering test. Re-judge the same
+                # on-disk mutant against the full --test-command; a full kill
+                # corrects the verdict (see combine_confirmation).
+                if config.confirm_survivors:
+                    subset_status = _status_from_test_result(
+                        test_result, source_name=mutation.path.name
+                    )
+                    if subset_status == "survived":
+                        full_result = run_test_command(config)
+                        full_status = _status_from_test_result(
+                            full_result, source_name=mutation.path.name
+                        )
+                        selected_status = subset_status
+                        _, confirmation = combine_confirmation(
+                            subset_status, full_status
+                        )
+                        # The confirming run is now authoritative for the verdict
+                        # and the debug trail.
+                        test_result = full_result
             else:
                 test_result = run_test_command(config)
         except TestRunError as exc:
@@ -265,7 +333,13 @@ def run_single_mutation_test(
             f"Mutation test for {mutation.function_name} did not produce a result."
         )
 
-    return _mutation_run_result(mutation, test_result, restored=restored)
+    return _mutation_run_result(
+        mutation,
+        test_result,
+        restored=restored,
+        selected_status=selected_status,
+        confirmation=confirmation,
+    )
 
 
 def run_mutation_tests(

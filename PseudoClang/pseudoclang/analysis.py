@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pseudoclang.coverage_map import (
     JUDGMENT_FULL_NO_MAP,
     JUDGMENT_FULL_NO_TEMPLATE,
+    JUDGMENT_FULL_SELECTED_UNTRUSTWORTHY,
     CoverageMap,
     ExecutionPlan,
     PlanKind,
@@ -32,7 +33,11 @@ from pseudoclang.mutate import (
     UnsupportedReturnTypeError,
     generate_default_return_mutations,
 )
-from pseudoclang.runner import TestRunResult
+from pseudoclang.runner import (
+    TestRunError,
+    TestRunResult,
+    run_selected_test_command,
+)
 from pseudoclang.source import SourceFile
 
 
@@ -120,6 +125,14 @@ def full_command_judges_any_mutant(
     if config.test_runner_template is None:
         # A SELECTED lookup degrades to a full run without a template.
         return True
+    if config.confirm_survivors and map_selects_any_mutant(
+        config, coverage_map, function_names
+    ):
+        # Confirmation (and the selected-subset guard) run the full --test-command
+        # against a selected mutant / the original source, so a non-rebuilding
+        # command would silently make confirmation toothless and re-expose the
+        # stale-binary false PT. Probe it even in an otherwise pure-selected run.
+        return True
     for function_name in function_names:
         selection = coverage_map.lookup(config.relative_file_path, function_name)
         plan = decide_execution(
@@ -153,6 +166,52 @@ def map_selects_any_mutant(
         if plan.kind is PlanKind.RUN_SELECTED:
             return True
     return False
+
+
+def guard_selected_plan(
+    config: PseudoScopeConfig,
+    plan: ExecutionPlan,
+    function_name: str,
+) -> ExecutionPlan:
+    """
+    Validate that a SELECTED plan's subset can actually judge the function.
+
+    Runs the selected subset once against the current on-disk source, which is the
+    original (unmutated) file at every call site (before any mutation is written).
+    If it does not cleanly pass (times out, or exits non-zero, e.g. the map's
+    nodeids no longer collect any test), the subset is not a trustworthy judge, so
+    the plan is degraded to a full run (``JUDGMENT_FULL_SELECTED_UNTRUSTWORTHY``).
+    This closes a silent false-not-pseudo-tested path: a subset that collects zero
+    tests exits non-zero, which would otherwise score every mutant ``killed``.
+
+    No-op unless ``config.confirm_survivors`` is set and the plan is RUN_SELECTED.
+    """
+    if not config.confirm_survivors or plan.kind is not PlanKind.RUN_SELECTED:
+        return plan
+
+    try:
+        result = run_selected_test_command(config, plan.nodeids)
+    except TestRunError:
+        # The subset command cannot even start; the full suite is the safe judge.
+        return ExecutionPlan(
+            PlanKind.RUN_FULL, judgment=JUDGMENT_FULL_SELECTED_UNTRUSTWORTHY
+        )
+
+    if result.timed_out or result.exit_code != 0:
+        print(
+            f"Warning: the coverage map's selected tests for {function_name} do "
+            f"not pass on the unmutated source (exit {result.exit_code}, "
+            f"timed_out={result.timed_out}); the subset cannot judge its mutants, "
+            "so this function falls back to the full --test-command. The map may "
+            "list tests that no longer collect (renamed/removed); rebuild it "
+            "(coverage-map / --refresh-coverage-map).",
+            file=sys.stderr,
+        )
+        return ExecutionPlan(
+            PlanKind.RUN_FULL, judgment=JUDGMENT_FULL_SELECTED_UNTRUSTWORTHY
+        )
+
+    return plan
 
 
 def execute_plan(
@@ -255,6 +314,9 @@ def analyze_function(
         )
 
     plan = resolve_execution_plan(config, coverage_map, function_name)
+    # Confirm the selected subset actually judges this function (degrades to a full
+    # run if its tests no longer pass on the original source) before trusting it.
+    plan = guard_selected_plan(config, plan, function_name)
     selected_tests = (
         plan.nodeids if plan.kind is PlanKind.RUN_SELECTED else None
     )

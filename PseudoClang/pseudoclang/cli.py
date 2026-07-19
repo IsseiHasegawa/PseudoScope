@@ -40,6 +40,7 @@ from pseudoclang.mutate import (
 from pseudoclang.analysis import (
     execute_plan,
     full_command_judges_any_mutant,
+    guard_selected_plan,
     map_selects_any_mutant,
     resolve_execution_plan,
 )
@@ -257,6 +258,21 @@ def _add_consume_args(parser: argparse.ArgumentParser) -> None:
             "| grep '::'\". When a reused --coverage-map drives test selection, "
             "PseudoClang warns about tests the map never recorded (they would not "
             "run against any mutant). Requires --coverage-map."
+        ),
+    )
+    parser.add_argument(
+        "--no-confirm-survivors",
+        dest="confirm_survivors",
+        action="store_false",
+        default=True,
+        help=(
+            "Disable the safety re-check on the selected-test path (default: on). "
+            "By default a mutant that survives its map-selected subset is re-judged "
+            "against the full --test-command before being reported pseudo-tested "
+            "(the map may have missed a covering test), and a selected subset that "
+            "no longer passes on the original source falls back to the full suite. "
+            "This flag trusts the map's subset verdict directly: faster, but a "
+            "capture blind spot then yields a false pseudo-tested result."
         ),
     )
 
@@ -519,6 +535,7 @@ def _build_config_from_args(args: argparse.Namespace) -> PseudoScopeConfig:
             if getattr(args, "quiet", False)
             else 1 + getattr(args, "verbose", 0)
         ),
+        confirm_survivors=getattr(args, "confirm_survivors", True),
         pstrace_module=getattr(args, "pstrace_module", None),
         pstrace_src_root=getattr(args, "pstrace_src_root", None),
         pstrace_build_cmd=getattr(args, "pstrace_build_cmd", None),
@@ -1073,6 +1090,9 @@ def _run_analysis(config: PseudoScopeConfig) -> int:
 
     if baseline_test_succeeded(baseline):
         plan = resolve_execution_plan(config, coverage_map, config.function_name)
+        # Confirm the selected subset can judge this function before trusting it
+        # (degrades to the full --test-command if it no longer passes on original).
+        plan = guard_selected_plan(config, plan, config.function_name)
         try:
             mutation_results = run_step_run_mutation_tests(
                 config, mutations, execution_plan=plan

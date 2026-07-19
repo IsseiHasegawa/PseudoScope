@@ -232,6 +232,7 @@ def build_config(
     test_list_cmd: str | None = None,
     max_snapshots: int = 5,
     verbosity: int = 1,
+    confirm_survivors: bool = True,
     pstrace_module: str | None = None,
     pstrace_src_root: str | None = None,
     pstrace_build_cmd: str | None = None,
@@ -367,4 +368,5 @@ def build_config(
         test_list_cmd=test_list_value,
         max_snapshots=max(0, max_snapshots),
         verbosity=max(0, min(3, verbosity)),
+        confirm_survivors=confirm_survivors,
     )
