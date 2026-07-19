@@ -26,6 +26,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from pseudoclang.atomicio import atomic_write_bytes
 from pseudoclang.validation import default_output_dir
 
 MANIFEST_NAME = "manifest.json"
@@ -106,7 +107,9 @@ def record(
         backup_name = _backup_name(key)
         backup_file = directory / backup_name
         if not backup_file.exists():
-            backup_file.write_bytes(original_bytes)
+            # Atomic so a crash mid-copy cannot leave a partial backup that would
+            # later restore truncated bytes over the user's source.
+            atomic_write_bytes(backup_file, original_bytes)
         manifest = _load_manifest(directory)
         manifest["entries"][key] = {
             "backup": backup_name,
@@ -209,7 +212,8 @@ def _restore_one(
         return RestoreOutcome(target, "restored" if is_our_mutant else "forced")
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(original_bytes)
+        # Atomic so a failed crash-restore write cannot corrupt the source.
+        atomic_write_bytes(target, original_bytes)
     except OSError as exc:
         return RestoreOutcome(target, "error", str(exc))
     return RestoreOutcome(target, "restored" if is_our_mutant else "forced")

@@ -15,6 +15,7 @@ so the workspace is not left mutated after analysis, for example::
 
 from __future__ import annotations
 
+from pseudoclang.atomicio import atomic_write_text
 from pseudoclang.mutate import MutatedSource
 
 
@@ -34,11 +35,10 @@ def write_mutated_source(
     file is not left mutated on disk after the program exits.
     """
     try:
-        # newline="" so we write bytes as-is (no LF -> os.linesep translation),
-        # keeping a CRLF file's endings intact through the mutate/restore cycle.
-        mutation.path.write_text(
-            mutation.mutated_content, encoding=encoding, newline=""
-        )
+        # Atomic (temp + os.replace) so a failed write never truncates the target;
+        # bytes are written as-is (no LF -> os.linesep translation), keeping a CRLF
+        # file's endings intact through the mutate/restore cycle.
+        atomic_write_text(mutation.path, mutation.mutated_content, encoding=encoding)
     except OSError as exc:
         raise WorkspaceError(
             f"Failed to write mutated source to {mutation.path}: {exc}"
@@ -56,9 +56,8 @@ def restore_original_source(
     Use after :func:`write_mutated_source`, typically in a ``finally`` block.
     """
     try:
-        mutation.path.write_text(
-            mutation.original_content, encoding=encoding, newline=""
-        )
+        # Atomic so a failed restore cannot corrupt the source it is protecting.
+        atomic_write_text(mutation.path, mutation.original_content, encoding=encoding)
     except OSError as exc:
         raise WorkspaceError(
             f"Failed to restore original source at {mutation.path}: {exc}"

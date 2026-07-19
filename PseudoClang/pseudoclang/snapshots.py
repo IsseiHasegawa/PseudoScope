@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from pseudoclang.atomicio import atomic_write_bytes
 from pseudoclang.backup import RestoreOutcome
 from pseudoclang.validation import default_output_dir
 
@@ -214,7 +215,8 @@ def create_snapshot(
         for target, original_bytes in files:
             key = str(target.resolve())
             backup_name = _backup_name(key)
-            (snap_dir / backup_name).write_bytes(original_bytes)
+            # Atomic so a crash mid-copy cannot leave a partial recovery point.
+            atomic_write_bytes(snap_dir / backup_name, original_bytes)
             manifest_files.append(
                 {
                     "target": key,
@@ -287,7 +289,8 @@ def restore_snapshot(
 
         try:
             item.target.parent.mkdir(parents=True, exist_ok=True)
-            item.target.write_bytes(original_bytes)
+            # Atomic so a failed rollback write cannot corrupt the target source.
+            atomic_write_bytes(item.target, original_bytes)
         except OSError as exc:
             outcomes.append(RestoreOutcome(item.target, "error", str(exc)))
             continue

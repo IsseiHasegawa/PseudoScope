@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Iterator
 
 from pseudoclang import backup
+from pseudoclang.atomicio import atomic_write_text
 
 # Sources currently edited on disk, mapped to their original content. The
 # per-operation ``finally`` is the primary restore; this registry lets the
@@ -30,7 +31,8 @@ def _restore_pending_sources() -> None:
     """Best-effort restore of every source still edited on disk (signal / atexit)."""
     for path, original in list(_PENDING_RESTORES.items()):
         try:
-            path.write_text(original, encoding="utf-8", newline="")
+            # Atomic so the emergency restore itself can never truncate the source.
+            atomic_write_text(path, original, encoding="utf-8")
         except OSError:  # pragma: no cover - disk error during emergency restore
             continue  # keep it registered so a later retry can still restore
         _PENDING_RESTORES.pop(path, None)
@@ -78,7 +80,7 @@ def guarded_source_write(
     registry covers ``SIGTERM`` and abnormal exit.
     """
     install_backstop()
-    path.write_text(new_content, encoding=encoding, newline="")
+    atomic_write_text(path, new_content, encoding=encoding)
     register(path, original_content)
     # Persist the original so a hard crash can be undone via `pseudoclang restore`.
     backup.record(
@@ -92,6 +94,6 @@ def guarded_source_write(
         # Restore first, then unregister only on success: if the restore write
         # raises, leave the path registered so the atexit / SIGTERM backstop can
         # retry it at exit instead of silently disarming the last-resort recovery.
-        path.write_text(original_content, encoding=encoding, newline="")
+        atomic_write_text(path, original_content, encoding=encoding)
         unregister(path)
         backup.clear(path)

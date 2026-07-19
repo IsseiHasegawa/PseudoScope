@@ -92,18 +92,20 @@ def test_guarded_source_write_restores_on_exception(tmp_path):
 def test_guarded_source_write_stays_registered_when_restore_write_fails(tmp_path, monkeypatch):
     # If the restore write itself fails, the path must remain registered so the
     # atexit/SIGTERM backstop can retry -- it must NOT be silently unregistered.
+    from pseudoclang import restore_backstop
+
     f = tmp_path / "x.c"
     f.write_text("ORIG\n")
-    real_write = Path.write_text
+    real_write = restore_backstop.atomic_write_text
 
-    def flaky_write(self, data, **kwargs):
+    def flaky_write(path, content, *, encoding="utf-8"):
         # Fail only the restore write (original content back to the source), so
         # the assertion is robust to any other bookkeeping writes in between.
-        if self == f and data == "ORIG\n":
+        if content == "ORIG\n":
             raise OSError("disk full")
-        return real_write(self, data, **kwargs)
+        return real_write(path, content, encoding=encoding)
 
-    monkeypatch.setattr(Path, "write_text", flaky_write)
+    monkeypatch.setattr(restore_backstop, "atomic_write_text", flaky_write)
     with pytest.raises(OSError):
         with guarded_source_write(f, "NEW\n", "ORIG\n"):
             pass
