@@ -238,10 +238,3 @@ python -m pseudoclang \
   --output-file pillow-filter-sweep.json \
   --timeout 120
 ```
-
-cd /Users/issei/Documents/summer-research/PsedoClang/Pillow
-source .venv/bin/activate   
-
-python setup.py build_ext --inplace --force
-
-pytest Tests/test_image_filter.py -q
